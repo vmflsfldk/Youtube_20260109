@@ -40,3 +40,22 @@ class SongMatch:
     song_title: str
     original_artist: str
     confidence: float
+
+
+@dataclass(frozen=True)
+class TimestampedComment:
+    timestamp_sec: float
+    song_title: str
+    original_artist: str
+    raw_text: str
+
+
+@dataclass(frozen=True)
+class TrainingSample:
+    timestamp_sec: float
+    expected_title: str
+    expected_artist: str
+    matched_title: str
+    matched_artist: str
+    match_score: float
+    is_match: bool
