@@ -76,6 +76,7 @@ def process_video(channel_id: str, video: Video, config: PipelineConfig, store: 
     segments = detect_song_segments(audio.path)
     filtered_segments = filter_short_segments(segments, min_duration=config.min_segment_duration)
 
+    matches: list[SongMatch] = []
     for segment in filtered_segments:
         candidates = audio_match(segment)
         if config.use_lyrics_rerank:
@@ -84,7 +85,9 @@ def process_video(channel_id: str, video: Video, config: PipelineConfig, store: 
         else:
             best = sorted(candidates, key=lambda item: item.match_score, reverse=True)[0]
         match = build_song_match(segment, best.title, best.original_artist, best.match_score)
-        store.add(channel_id, video.video_id, [match])
+        matches.append(match)
+
+    store.add(channel_id, video.video_id, matches)
 
 
 def process_channel(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
