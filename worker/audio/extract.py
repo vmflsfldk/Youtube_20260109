@@ -10,6 +10,7 @@ import tempfile
 from typing import Optional
 
 from worker.models import Video
+from worker.ytdlp_runtime import js_runtime_cli_args
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ def _extract_with_ytdlp_pipe(source: str, output_path: Path, target_rate: int) -
         "bestaudio",
         "-o",
         "-",
+        *js_runtime_cli_args(),
         source,
     ]
     ffmpeg_cmd = [
@@ -117,6 +119,7 @@ def _extract_with_ytdlp_download(source: str, output_path: Path, target_rate: in
         "bestaudio",
         "-o",
         str(temp_path),
+        *js_runtime_cli_args(),
         source,
     ]
     ffmpeg_cmd = [

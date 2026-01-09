@@ -15,6 +15,7 @@ from importlib import util as importlib_util
 from typing import Iterable, List
 
 from worker.models import Video
+from worker.ytdlp_runtime import js_runtime_cli_args, js_runtime_options
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ def _fetch_channel_metadata(channel_url: str, playlist_end: int | None = None) -
     yt_dlp = _load_ytdlp()
     if yt_dlp is None:
         return None
-    options = {"quiet": True, "extract_flat": True}
+    options = {"quiet": True, "extract_flat": True, **js_runtime_options()}
     if playlist_end is not None:
         options["playlistend"] = playlist_end
     ydl = yt_dlp.YoutubeDL(options)
@@ -369,7 +370,7 @@ def _chunk_list(items: list[str], chunk_size: int) -> Iterable[list[str]]:
 def _fallback_metadata(channel_url: str) -> dict | None:
     if not shutil_which("yt-dlp"):
         return None
-    cmd = ["yt-dlp", "--dump-single-json", "--flat-playlist", channel_url]
+    cmd = ["yt-dlp", "--dump-single-json", "--flat-playlist", *js_runtime_cli_args(), channel_url]
     try:
         output = subprocess.check_output(cmd, text=True)
     except subprocess.CalledProcessError as exc:
