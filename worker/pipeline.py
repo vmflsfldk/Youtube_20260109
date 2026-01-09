@@ -83,7 +83,7 @@ def process_video(channel_id: str, video: Video, config: PipelineConfig, store: 
     for segment in filtered_segments:
         candidates = audio_match(segment)
         if config.use_lyrics_rerank:
-            transcript = transcribe_segment(segment)
+            transcript = transcribe_segment(audio.path, segment.start_sec, segment.end_sec)
             best = rerank_with_lyrics(segment, transcript, candidates)
         else:
             best = sorted(candidates, key=lambda item: item.match_score, reverse=True)[0]
