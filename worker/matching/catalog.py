@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 import sqlite3
@@ -60,7 +61,26 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS song_lyrics (
+            song_id TEXT PRIMARY KEY,
+            lyrics_text TEXT NOT NULL,
+            source TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (song_id) REFERENCES songs(song_id) ON DELETE CASCADE
+        )
+        """
+    )
     connection.commit()
+
+
+@dataclass(frozen=True)
+class SongLyrics:
+    song_id: str
+    lyrics_text: str
+    source: str
+    updated_at: str
 
 
 def _parse_json_list(raw: str | None) -> list[str]:
@@ -93,6 +113,10 @@ def _parse_embedding(raw: str | None) -> tuple[float, ...] | None:
     return tuple(values) if values else None
 
 
+def _normalize(value: str) -> str:
+    return value.strip().lower()
+
+
 def load_catalog(db_path: Path | None = None) -> tuple[CatalogSong, ...]:
     path = db_path or DEFAULT_DB_PATH
     with _connect(path) as connection:
@@ -120,6 +144,105 @@ def load_catalog(db_path: Path | None = None) -> tuple[CatalogSong, ...]:
             )
         )
     return tuple(songs)
+
+
+def find_song_id_by_title_artist(
+    title: str,
+    original_artist: str,
+    db_path: Path | None = None,
+) -> str | None:
+    normalized_title = _normalize(title)
+    normalized_artist = _normalize(original_artist)
+    for song in load_catalog(db_path):
+        if _normalize(song.original_artist) != normalized_artist:
+            continue
+        if _normalize(song.title) == normalized_title:
+            return song.song_id
+        if any(_normalize(alias) == normalized_title for alias in song.aliases):
+            return song.song_id
+    return None
+
+
+def get_song_lyrics(song_id: str, db_path: Path | None = None) -> SongLyrics | None:
+    path = db_path or DEFAULT_DB_PATH
+    with _connect(path) as connection:
+        _ensure_schema(connection)
+        row = connection.execute(
+            """
+            SELECT song_id, lyrics_text, source, updated_at
+            FROM song_lyrics
+            WHERE song_id = ?
+            """,
+            (song_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return SongLyrics(
+        song_id=row["song_id"],
+        lyrics_text=row["lyrics_text"],
+        source=row["source"],
+        updated_at=row["updated_at"],
+    )
+
+
+def get_song_lyrics_map(
+    song_ids: Iterable[str],
+    db_path: Path | None = None,
+) -> dict[str, SongLyrics]:
+    ids = [song_id for song_id in song_ids if song_id]
+    if not ids:
+        return {}
+    path = db_path or DEFAULT_DB_PATH
+    placeholders = ", ".join("?" for _ in ids)
+    with _connect(path) as connection:
+        _ensure_schema(connection)
+        rows = connection.execute(
+            f"""
+            SELECT song_id, lyrics_text, source, updated_at
+            FROM song_lyrics
+            WHERE song_id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+    return {
+        row["song_id"]: SongLyrics(
+            song_id=row["song_id"],
+            lyrics_text=row["lyrics_text"],
+            source=row["source"],
+            updated_at=row["updated_at"],
+        )
+        for row in rows
+    }
+
+
+def has_song_lyrics(song_id: str, db_path: Path | None = None) -> bool:
+    return get_song_lyrics(song_id, db_path=db_path) is not None
+
+
+def upsert_song_lyrics(
+    song_id: str,
+    lyrics_text: str,
+    source: str,
+    *,
+    updated_at: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    path = db_path or DEFAULT_DB_PATH
+    timestamp = updated_at or datetime.now(tz=timezone.utc).isoformat()
+    with _connect(path) as connection:
+        _ensure_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO song_lyrics (song_id, lyrics_text, source, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(song_id)
+            DO UPDATE SET lyrics_text = excluded.lyrics_text,
+                          source = excluded.source,
+                          updated_at = excluded.updated_at
+            """,
+            (song_id, lyrics_text, source, timestamp),
+        )
+        connection.commit()
 
 
 @lru_cache(maxsize=1)

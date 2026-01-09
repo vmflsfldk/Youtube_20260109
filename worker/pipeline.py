@@ -18,6 +18,8 @@ from worker.audio.vocal import separate_vocals
 from worker.crawler.comments import fetch_timestamped_comments, save_timestamped_comments
 from worker.crawler.youtube import fetch_channel_id, fetch_live_videos, fetch_videos, filter_new_videos
 from worker.matching.audio_match import audio_match
+from worker.matching.catalog import find_song_id_by_title_artist, has_song_lyrics, upsert_song_lyrics
+from worker.matching.lyrics_fetch import fetch_lyrics
 from worker.matching.rerank import rerank_with_lyrics
 from worker.matching.training import build_training_samples, save_training_samples, summarize_training
 from worker.models import SongMatch, SongSegment, Video
@@ -107,6 +109,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         """
     )
     connection.commit()
+
+
+def _normalize_comment_value(value: str) -> str:
+    return value.strip().lower()
 
 
 def _upsert_channel(connection: sqlite3.Connection, channel_id: str, channel_url: str) -> None:
@@ -406,8 +412,62 @@ def collect_live_comment_training(
         audio = extract_audio(video, target_rate=config.sample_rate)
         comments = fetch_timestamped_comments(video.video_id)
         comment_path = save_timestamped_comments(video.video_id, comments)
+        lyrics_updates: list[dict[str, str]] = []
+        unique_songs: dict[tuple[str, str], tuple[str, str]] = {}
+        for comment in comments:
+            key = (_normalize_comment_value(comment.song_title), _normalize_comment_value(comment.original_artist))
+            if key not in unique_songs:
+                unique_songs[key] = (comment.song_title, comment.original_artist)
+
+        for song_title, original_artist in unique_songs.values():
+            song_id = find_song_id_by_title_artist(song_title, original_artist)
+            if not song_id:
+                lyrics_updates.append(
+                    {
+                        "song_title": song_title,
+                        "original_artist": original_artist,
+                        "status": "song_id_not_found",
+                    }
+                )
+                continue
+            if has_song_lyrics(song_id):
+                lyrics_updates.append(
+                    {
+                        "song_id": song_id,
+                        "song_title": song_title,
+                        "original_artist": original_artist,
+                        "status": "exists",
+                    }
+                )
+                continue
+            result = fetch_lyrics(song_title, original_artist)
+            if result is None:
+                lyrics_updates.append(
+                    {
+                        "song_id": song_id,
+                        "song_title": song_title,
+                        "original_artist": original_artist,
+                        "status": "lyrics_not_found",
+                    }
+                )
+                continue
+            upsert_song_lyrics(song_id, result.lyrics_text, result.source)
+            lyrics_updates.append(
+                {
+                    "song_id": song_id,
+                    "song_title": song_title,
+                    "original_artist": original_artist,
+                    "status": "stored",
+                    "source": result.source,
+                }
+            )
         if comments:
-            samples = build_training_samples(audio, comments, window_sec=config.comment_window_sec)
+            samples = build_training_samples(
+                audio,
+                comments,
+                window_sec=config.comment_window_sec,
+                use_lyrics_rerank=config.use_lyrics_rerank,
+            )
             sample_path = save_training_samples(video.video_id, samples)
         else:
             samples = []
@@ -434,6 +494,7 @@ def collect_live_comment_training(
                 "training_summary": summary,
                 "training_summary_empty": not summary or summary.get("total", 0.0) == 0.0,
                 "comment_status": "댓글 없음" if not comments else "댓글 있음",
+                "lyrics_updates": lyrics_updates,
             }
         )
         logger.info(
