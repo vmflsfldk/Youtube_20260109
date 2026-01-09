@@ -35,6 +35,24 @@ def fetch_videos(channel_id: str) -> List[Video]:
             video_id=f"vid{index + 1:02d}",
             title=f"Sample Video {index + 1}",
             duration_sec=3600 + index * 600,
+            is_live=False,
+        )
+        for index in range(seed)
+    ]
+
+
+def fetch_live_videos(channel_id: str) -> List[Video]:
+    if importlib_util.find_spec("yt_dlp") is not None:
+        videos = _fetch_live_videos_with_ytdlp(channel_id)
+        if videos:
+            return videos
+    seed = sum(ord(char) for char in channel_id) % 2 + 1
+    return [
+        Video(
+            video_id=f"live{index + 1:02d}",
+            title=f"Sample Live Stream {index + 1}",
+            duration_sec=7200 + index * 600,
+            is_live=True,
         )
         for index in range(seed)
     ]
@@ -55,6 +73,17 @@ def _resolve_channel_id_with_ytdlp(channel_url: str) -> str | None:
 def _fetch_videos_with_ytdlp(channel_id: str) -> List[Video]:
     channel_url = f"https://www.youtube.com/channel/{channel_id}"
     metadata = _fetch_channel_metadata(channel_url)
+    return _parse_videos(metadata)
+
+
+def _fetch_live_videos_with_ytdlp(channel_id: str) -> List[Video]:
+    channel_url = f"https://www.youtube.com/channel/{channel_id}/streams"
+    metadata = _fetch_channel_metadata(channel_url)
+    videos = _parse_videos(metadata, assume_live=True)
+    return [video for video in videos if video.is_live]
+
+
+def _parse_videos(metadata: dict | None, assume_live: bool = False) -> List[Video]:
     entries = metadata.get("entries") if metadata else None
     if not entries:
         return []
@@ -62,16 +91,31 @@ def _fetch_videos_with_ytdlp(channel_id: str) -> List[Video]:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        video_id = entry.get("id")
-        title = entry.get("title")
-        duration = entry.get("duration") or entry.get("duration_string") or 0
-        try:
-            duration_sec = int(duration)
-        except (TypeError, ValueError):
-            duration_sec = 0
-        if video_id and title:
-            videos.append(Video(video_id=video_id, title=title, duration_sec=duration_sec))
+        video = _build_video(entry, assume_live=assume_live)
+        if video:
+            videos.append(video)
     return videos
+
+
+def _build_video(entry: dict, assume_live: bool = False) -> Video | None:
+    video_id = entry.get("id")
+    title = entry.get("title")
+    duration = entry.get("duration") or entry.get("duration_string") or 0
+    try:
+        duration_sec = int(duration)
+    except (TypeError, ValueError):
+        duration_sec = 0
+    if not video_id or not title:
+        return None
+    is_live = _entry_is_live(entry) or assume_live
+    return Video(video_id=video_id, title=title, duration_sec=duration_sec, is_live=is_live)
+
+
+def _entry_is_live(entry: dict) -> bool:
+    live_status = entry.get("live_status")
+    if isinstance(live_status, str):
+        return live_status in {"is_live", "was_live", "post_live"}
+    return bool(entry.get("is_live") or entry.get("was_live"))
 
 
 def _fetch_channel_metadata(channel_url: str, playlist_end: int | None = None) -> dict | None:

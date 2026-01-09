@@ -10,7 +10,7 @@ from typing import Iterable
 from worker.asr.transcribe import transcribe_segment
 from worker.audio.extract import AudioAsset, extract_audio
 from worker.audio.vocal import separate_vocals
-from worker.crawler.youtube import fetch_channel_id, fetch_videos, filter_new_videos
+from worker.crawler.youtube import fetch_channel_id, fetch_live_videos, fetch_videos, filter_new_videos
 from worker.matching.audio_match import audio_match
 from worker.matching.rerank import rerank_with_lyrics
 from worker.models import SongMatch, SongSegment, Video
@@ -103,10 +103,33 @@ def process_channel(channel_url: str, config: PipelineConfig | None = None) -> l
     return store.dump()
 
 
+def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
+    config = config or PipelineConfig()
+    channel_id = fetch_channel_id(channel_url)
+    videos = fetch_live_videos(channel_id)
+    videos = filter_new_videos(videos, processed_ids=[])
+    outputs: list[dict[str, object]] = []
+
+    for video in videos:
+        audio = extract_audio(video, target_rate=config.sample_rate)
+        outputs.append(
+            {
+                "channel_id": channel_id,
+                "video_id": video.video_id,
+                "title": video.title,
+                "audio_path": audio.path,
+                "sample_rate": audio.sample_rate,
+                "is_live": video.is_live,
+            }
+        )
+
+    return outputs
+
+
 def main() -> None:
     channel_url = input("Channel URL: ").strip()
     started_at = datetime.now(timezone.utc).isoformat()
-    results = process_channel(channel_url)
+    results = collect_live_audio(channel_url)
     print(
         json.dumps(
             {
