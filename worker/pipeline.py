@@ -22,6 +22,14 @@ from worker.segment.detect import detect_song_segments, filter_short_segments
 @dataclass(frozen=True)
 class PipelineConfig:
     min_segment_duration: float = 60.0
+    min_segment_confidence: float = 0.6
+    segment_min_song_prob: float = 0.55
+    segment_merge_gap_sec: float = 3.0
+    segment_merge_confidence_threshold: float = 0.7
+    segment_merge_confidence_bonus_sec: float = 2.0
+    segment_model_weight: float = 0.6
+    segment_rms_weight: float = 0.25
+    segment_label_weight: float = 0.15
     enable_vocal_separation: bool = False
     sample_rate: int = 44100
     use_lyrics_rerank: bool = True
@@ -76,8 +84,21 @@ def build_song_match(segment: SongSegment, best_title: str, best_artist: str, sc
 
 def process_video(channel_id: str, video: Video, config: PipelineConfig, store: ResultStore) -> None:
     audio = prepare_audio(video, config)
-    segments = detect_song_segments(audio.path)
-    filtered_segments = filter_short_segments(segments, min_duration=config.min_segment_duration)
+    segments = detect_song_segments(
+        audio.path,
+        min_song_prob=config.segment_min_song_prob,
+        merge_gap_sec=config.segment_merge_gap_sec,
+        model_weight=config.segment_model_weight,
+        rms_weight=config.segment_rms_weight,
+        label_weight=config.segment_label_weight,
+        merge_confidence_threshold=config.segment_merge_confidence_threshold,
+        merge_confidence_bonus_sec=config.segment_merge_confidence_bonus_sec,
+    )
+    filtered_segments = filter_short_segments(
+        segments,
+        min_duration=config.min_segment_duration,
+        min_confidence=config.min_segment_confidence,
+    )
 
     matches: list[SongMatch] = []
     for segment in filtered_segments:
