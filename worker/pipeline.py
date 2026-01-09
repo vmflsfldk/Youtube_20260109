@@ -128,13 +128,20 @@ def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -
 
 def main() -> None:
     channel_url = input("Channel URL: ").strip()
+    selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석): ").strip()
     started_at = datetime.now(timezone.utc).isoformat()
-    results = collect_live_audio(channel_url)
+    if selection == "1":
+        stage = "crawl"
+        results = collect_live_audio(channel_url)
+    else:
+        stage = "analysis"
+        results = process_channel(channel_url)
     print(
         json.dumps(
             {
                 "requested_at": started_at,
                 "channel_url": channel_url,
+                "stage": stage,
                 "outputs": results,
             },
             ensure_ascii=False,
