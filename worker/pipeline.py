@@ -428,7 +428,8 @@ def collect_archived_comment_training(
             video.title,
         )
         audio = extract_audio(video, target_rate=config.sample_rate)
-        comments = fetch_timestamped_comments(video.video_id)
+        parsed_comments = fetch_timestamped_comments(video.video_id)
+        comments = parsed_comments.comments
         comment_path = save_timestamped_comments(video.video_id, comments)
         lyrics_updates: list[dict[str, str]] = []
         unique_songs: dict[tuple[str, str], tuple[str, str]] = {}
@@ -511,17 +512,26 @@ def collect_archived_comment_training(
                 "training_samples_path": sample_path,
                 "training_summary": summary,
                 "training_summary_empty": not summary or summary.get("total", 0.0) == 0.0,
-                "comment_status": "댓글 없음" if not comments else "댓글 있음",
+                "raw_comment_count": parsed_comments.total_comments,
+                "timestamped_comment_count": parsed_comments.parsed_comments,
+                "comment_status": (
+                    "댓글 없음"
+                    if parsed_comments.total_comments == 0
+                    else "타임스탬프 없음"
+                    if parsed_comments.parsed_comments == 0
+                    else "댓글 있음"
+                ),
                 "lyrics_updates": lyrics_updates,
             }
         )
         logger.info(
-            "아카이브 댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s comments=%s",
+            "아카이브 댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s raw_comments=%s timestamped_comments=%s",
             index,
             total,
             video.video_id,
             video.title,
-            len(comments),
+            parsed_comments.total_comments,
+            parsed_comments.parsed_comments,
         )
 
     if not outputs:
