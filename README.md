@@ -277,6 +277,12 @@ project-root/
   - `inaSpeechSegmenter`, `pyannote.audio` (구간 탐지 보강)
   - `demucs` (보컬 분리)
 
+yt-dlp JS 챌린지 대응 안내:
+- JavaScript 런타임(Node.js 또는 Deno)이 필요하다.
+- 런타임 경로를 지정하려면 `YTDLP_JS_RUNTIME="node:/path/to/node"` 또는
+  `YTDLP_JS_RUNTIME_PATH=/path/to/node`(선택적으로 `YTDLP_JS_RUNTIME_NAME=node`)를 설정한다.
+- EJS solver 리소스는 `remote_components` 설정으로 `ejs:github`를 사용한다.
+
 설치 예시(선택 의존성 포함):
 ```bash
 python -m pip install faster-whisper rapidfuzz chromaprint inaSpeechSegmenter pyannote.audio

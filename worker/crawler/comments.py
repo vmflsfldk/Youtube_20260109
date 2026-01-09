@@ -25,6 +25,25 @@ LEADING_INDEX_PATTERN = re.compile(r"^\s*\d+\s*[.)·-]?\s*")
 TRAILING_INDEX_PATTERN = re.compile(r"\s*\n?\s*\d+\s*[.)·-]?\s*$")
 
 
+class _YtdlpLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def debug(self, msg: str) -> None:
+        return
+
+    def info(self, msg: str) -> None:
+        return
+
+    def warning(self, msg: str) -> None:
+        text = str(msg)
+        self.warnings.append(text)
+        logging.warning("yt-dlp warning: %s", text)
+
+    def error(self, msg: str) -> None:
+        logging.error("yt-dlp error: %s", msg)
+
+
 def fetch_timestamped_comments(video_id: str, *, use_fallback: bool = False) -> ParsedComments:
     if importlib_util.find_spec("yt_dlp") is not None:
         return _fetch_comments_with_ytdlp(video_id)
@@ -52,10 +71,13 @@ def _fetch_comments_with_ytdlp(video_id: str) -> ParsedComments:
         return ParsedComments(comments=[], total_comments=0, parsed_comments=0)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
+    logger = _YtdlpLogger()
     options = {
         "quiet": True,
         "skip_download": True,
         "extract_comments": True,
+        "remote_components": "ejs:github",
+        "logger": logger,
         **js_runtime_options(),
     }
     ydl = yt_dlp.YoutubeDL(options)
@@ -65,6 +87,7 @@ def _fetch_comments_with_ytdlp(video_id: str) -> ParsedComments:
         logging.warning("yt-dlp failed to fetch comments for %s: %s", video_id, exc)
         return ParsedComments(comments=[], total_comments=0, parsed_comments=0)
     raw_comments = [comment.get("text", "") for comment in info.get("comments", []) if isinstance(comment, dict)]
+    _log_ytdlp_warnings(video_id, logger.warnings, raw_comments)
     return _parse_timestamped_comments(raw_comments)
 
 
@@ -171,3 +194,24 @@ def _to_json(payload: object) -> str:
     import json
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _log_ytdlp_warnings(video_id: str, warnings: list[str], raw_comments: list[str]) -> None:
+    if not warnings:
+        return
+    if _has_js_runtime_warning(warnings):
+        logging.warning(
+            "EJS solver missing or JS runtime unavailable for %s; comment extraction likely incomplete.",
+            video_id,
+        )
+    if not raw_comments:
+        logging.warning("yt-dlp emitted warnings while fetching comments for %s; 0 comments returned.", video_id)
+
+
+def _has_js_runtime_warning(warnings: list[str]) -> bool:
+    tokens = ("ejs", "javascript runtime", "js runtime", "supported javascript runtime", "js_runtimes")
+    for warning in warnings:
+        text = warning.lower()
+        if any(token in text for token in tokens):
+            return True
+    return False
