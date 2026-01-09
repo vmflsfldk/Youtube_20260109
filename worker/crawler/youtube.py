@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from importlib import util as importlib_util
 from typing import Iterable, List
 
@@ -25,37 +30,29 @@ def fetch_channel_id(channel_url: str) -> str:
 
 
 def fetch_videos(channel_id: str) -> List[Video]:
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    if api_key:
+        videos = _fetch_uploads_with_api(channel_id, api_key)
+        if videos:
+            return videos
     if importlib_util.find_spec("yt_dlp") is not None:
         videos = _fetch_videos_with_ytdlp(channel_id)
         if videos:
             return videos
-    seed = sum(ord(char) for char in channel_id) % 3 + 1
-    return [
-        Video(
-            video_id=f"vid{index + 1:02d}",
-            title=f"Sample Video {index + 1}",
-            duration_sec=3600 + index * 600,
-            is_live=False,
-        )
-        for index in range(seed)
-    ]
+    return []
 
 
 def fetch_live_videos(channel_id: str) -> List[Video]:
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    if api_key:
+        videos = _fetch_live_and_archived_with_api(channel_id, api_key)
+        if videos:
+            return videos
     if importlib_util.find_spec("yt_dlp") is not None:
         videos = _fetch_live_videos_with_ytdlp(channel_id)
         if videos:
             return videos
-    seed = sum(ord(char) for char in channel_id) % 2 + 1
-    return [
-        Video(
-            video_id=f"live{index + 1:02d}",
-            title=f"Sample Live Stream {index + 1}",
-            duration_sec=7200 + index * 600,
-            is_live=True,
-        )
-        for index in range(seed)
-    ]
+    return []
 
 
 def filter_new_videos(videos: Iterable[Video], processed_ids: Iterable[str]) -> List[Video]:
@@ -131,6 +128,202 @@ def _fetch_channel_metadata(channel_url: str, playlist_end: int | None = None) -
     except yt_dlp.utils.DownloadError as exc:  # type: ignore[attr-defined]
         logging.warning("yt-dlp failed to fetch channel metadata: %s", exc)
         return _fallback_metadata(channel_url)
+
+
+def _fetch_uploads_with_api(channel_id: str, api_key: str) -> List[Video]:
+    channel_response = _youtube_api_request(
+        "channels",
+        {
+            "part": "contentDetails",
+            "id": channel_id,
+            "maxResults": "1",
+        },
+        api_key,
+    )
+    if not channel_response:
+        return []
+    items = channel_response.get("items") or []
+    if not items:
+        return []
+    uploads_id = (
+        items[0]
+        .get("contentDetails", {})
+        .get("relatedPlaylists", {})
+        .get("uploads")
+    )
+    if not uploads_id:
+        return []
+
+    videos: list[Video] = []
+    page_token: str | None = None
+    while True:
+        params = {
+            "part": "snippet,contentDetails",
+            "playlistId": uploads_id,
+            "maxResults": "50",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = _youtube_api_request("playlistItems", params, api_key)
+        if not response:
+            break
+        items = response.get("items") or []
+        video_ids = [
+            item.get("contentDetails", {}).get("videoId")
+            for item in items
+            if item.get("contentDetails")
+        ]
+        durations = _fetch_video_durations(video_ids, api_key)
+        for item in items:
+            content = item.get("contentDetails", {})
+            snippet = item.get("snippet", {})
+            video_id = content.get("videoId")
+            title = snippet.get("title")
+            if not video_id or not title:
+                continue
+            videos.append(
+                Video(
+                    video_id=video_id,
+                    title=title,
+                    duration_sec=durations.get(video_id, 0),
+                    is_live=False,
+                )
+            )
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return videos
+
+
+def _fetch_live_and_archived_with_api(channel_id: str, api_key: str) -> List[Video]:
+    videos: list[Video] = []
+    for event_type, is_live in (("live", True), ("completed", False)):
+        videos.extend(
+            _fetch_search_event_videos(channel_id, api_key, event_type, is_live)
+        )
+    return videos
+
+
+def _fetch_search_event_videos(
+    channel_id: str,
+    api_key: str,
+    event_type: str,
+    is_live: bool,
+) -> List[Video]:
+    videos: list[Video] = []
+    page_token: str | None = None
+    while True:
+        params = {
+            "part": "snippet",
+            "channelId": channel_id,
+            "eventType": event_type,
+            "type": "video",
+            "maxResults": "50",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = _youtube_api_request("search", params, api_key)
+        if not response:
+            break
+        items = response.get("items") or []
+        video_ids = [
+            item.get("id", {}).get("videoId")
+            for item in items
+            if item.get("id")
+        ]
+        durations = _fetch_video_durations(video_ids, api_key)
+        for item in items:
+            snippet = item.get("snippet", {})
+            video_id = item.get("id", {}).get("videoId")
+            title = snippet.get("title")
+            if not video_id or not title:
+                continue
+            videos.append(
+                Video(
+                    video_id=video_id,
+                    title=title,
+                    duration_sec=durations.get(video_id, 0),
+                    is_live=is_live,
+                )
+            )
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return videos
+
+
+def _fetch_video_durations(video_ids: list[str], api_key: str) -> dict[str, int]:
+    durations: dict[str, int] = {}
+    for chunk in _chunk_list(video_ids, 50):
+        if not chunk:
+            continue
+        response = _youtube_api_request(
+            "videos",
+            {"part": "contentDetails", "id": ",".join(chunk)},
+            api_key,
+        )
+        if not response:
+            continue
+        for item in response.get("items") or []:
+            video_id = item.get("id")
+            duration = item.get("contentDetails", {}).get("duration")
+            if not video_id or not duration:
+                continue
+            durations[video_id] = _parse_iso8601_duration(duration)
+    return durations
+
+
+def _youtube_api_request(endpoint: str, params: dict, api_key: str) -> dict | None:
+    params = {**params, "key": api_key}
+    query = urllib.parse.urlencode(params)
+    url = f"https://www.googleapis.com/youtube/v3/{endpoint}?{query}"
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                if response.status != 200:
+                    logging.warning(
+                        "YouTube API responded with status %s for %s",
+                        response.status,
+                        endpoint,
+                    )
+                    return None
+                payload = response.read().decode("utf-8")
+                return json.loads(payload)
+        except urllib.error.HTTPError as exc:
+            logging.warning(
+                "YouTube API HTTP error on attempt %s: %s",
+                attempt,
+                exc,
+            )
+        except urllib.error.URLError as exc:
+            logging.warning(
+                "YouTube API URL error on attempt %s: %s",
+                attempt,
+                exc,
+            )
+        except json.JSONDecodeError as exc:
+            logging.warning("YouTube API JSON decode error: %s", exc)
+            return None
+        time.sleep(2**attempt)
+    return None
+
+
+def _parse_iso8601_duration(value: str) -> int:
+    match = re.match(
+        r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?$",
+        value,
+    )
+    if not match:
+        return 0
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    seconds = int(match.group("seconds") or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _chunk_list(items: list[str], chunk_size: int) -> Iterable[list[str]]:
+    for index in range(0, len(items), chunk_size):
+        yield items[index : index + chunk_size]
 
 
 def _fallback_metadata(channel_url: str) -> dict | None:
