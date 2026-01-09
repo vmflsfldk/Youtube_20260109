@@ -21,6 +21,8 @@ class ParsedComments:
 
 TIMESTAMP_PATTERN = re.compile(r"(?P<timestamp>(?:\d{1,2}:)?\d{1,2}:\d{2})")
 TITLE_ARTIST_PATTERN = re.compile(r"(?P<title>[^-/—]+?)\s*(?:-|/|—)\s*(?P<artist>.+)", re.UNICODE)
+LEADING_INDEX_PATTERN = re.compile(r"^\s*\d+\s*[.)·-]?\s*")
+TRAILING_INDEX_PATTERN = re.compile(r"\s*\n?\s*\d+\s*[.)·-]?\s*$")
 
 
 def fetch_timestamped_comments(video_id: str, *, use_fallback: bool = False) -> ParsedComments:
@@ -116,13 +118,20 @@ def _parse_timestamped_comments(raw_comments: Iterable[str]) -> ParsedComments:
 def _parse_title_artist(segment: str) -> tuple[str | None, str]:
     if not segment:
         return None, ""
-    match = TITLE_ARTIST_PATTERN.search(segment)
+    cleaned_segment = _strip_segment_indexes(segment)
+    match = TITLE_ARTIST_PATTERN.search(cleaned_segment)
     if match:
         return match.group("title").strip(), match.group("artist").strip()
-    cleaned = segment.strip().strip("-/—").strip()
+    cleaned = cleaned_segment.strip().strip("-/—").strip()
     if cleaned:
         return cleaned, ""
     return None, ""
+
+
+def _strip_segment_indexes(segment: str) -> str:
+    cleaned = LEADING_INDEX_PATTERN.sub("", segment)
+    cleaned = TRAILING_INDEX_PATTERN.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _parse_timestamp(value: str) -> float | None:
