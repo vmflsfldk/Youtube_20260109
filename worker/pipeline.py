@@ -140,8 +140,12 @@ def collect_live_comment_training(channel_url: str, config: PipelineConfig | Non
         audio = extract_audio(video, target_rate=config.sample_rate)
         comments = fetch_timestamped_comments(video.video_id)
         comment_path = save_timestamped_comments(video.video_id, comments)
-        samples = build_training_samples(audio, comments, window_sec=config.comment_window_sec)
-        sample_path = save_training_samples(video.video_id, samples)
+        if comments:
+            samples = build_training_samples(audio, comments, window_sec=config.comment_window_sec)
+            sample_path = save_training_samples(video.video_id, samples)
+        else:
+            samples = []
+            sample_path = None
         summary = summarize_training(samples)
         outputs.append(
             {
@@ -162,6 +166,8 @@ def collect_live_comment_training(channel_url: str, config: PipelineConfig | Non
                 "timestamped_comments_path": comment_path,
                 "training_samples_path": sample_path,
                 "training_summary": summary,
+                "training_summary_empty": not summary or summary.get("total", 0.0) == 0.0,
+                "comment_status": "댓글 없음" if not comments else "댓글 있음",
             }
         )
 
