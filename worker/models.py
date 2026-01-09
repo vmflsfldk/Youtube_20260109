@@ -58,4 +58,5 @@ class TrainingSample:
     matched_title: str
     matched_artist: str
     match_score: float
+    lyric_score: float
     is_match: bool
