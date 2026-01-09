@@ -22,7 +22,7 @@ from worker.matching.catalog import find_song_id_by_title_artist, has_song_lyric
 from worker.matching.lyrics_fetch import fetch_lyrics
 from worker.matching.rerank import rerank_with_lyrics
 from worker.matching.training import build_training_samples, save_training_samples, summarize_training
-from worker.models import SongMatch, SongSegment, Video
+from worker.models import SongMatch, SongSegment, TimestampedComment, Video
 from worker.segment.detect import detect_song_segments, filter_short_segments
 
 
@@ -123,6 +123,139 @@ def _normalize_comment_value(value: str) -> str:
     return value.strip().lower()
 
 
+def _validate_timestamped_comments(
+    comments: Iterable[TimestampedComment],
+    *,
+    duration_sec: int,
+) -> list[TimestampedComment]:
+    valid: list[TimestampedComment] = []
+    invalid_count = 0
+    for comment in comments:
+        if comment.timestamp_sec < 0:
+            invalid_count += 1
+            continue
+        if duration_sec > 0 and comment.timestamp_sec > duration_sec:
+            invalid_count += 1
+            continue
+        if not comment.song_title.strip():
+            invalid_count += 1
+            continue
+        if not comment.raw_text.strip():
+            invalid_count += 1
+            continue
+        valid.append(comment)
+    if invalid_count:
+        logger.info(
+            "댓글 타임스탬프 검증 제외: total=%s invalid=%s",
+            len(valid) + invalid_count,
+            invalid_count,
+        )
+    return valid
+
+
+def _prepare_comment_training(
+    video: Video,
+    audio: AudioAsset,
+    config: PipelineConfig,
+) -> tuple[dict[str, object], int, int]:
+    parsed_comments = fetch_timestamped_comments(video.video_id)
+    validated_comments = _validate_timestamped_comments(
+        parsed_comments.comments,
+        duration_sec=video.duration_sec,
+    )
+    comment_path = save_timestamped_comments(video.video_id, validated_comments)
+    lyrics_updates: list[dict[str, str]] = []
+    unique_songs: dict[tuple[str, str], tuple[str, str]] = {}
+    for comment in validated_comments:
+        key = (_normalize_comment_value(comment.song_title), _normalize_comment_value(comment.original_artist))
+        if key not in unique_songs:
+            unique_songs[key] = (comment.song_title, comment.original_artist)
+
+    for song_title, original_artist in unique_songs.values():
+        song_id = find_song_id_by_title_artist(song_title, original_artist)
+        if not song_id:
+            lyrics_updates.append(
+                {
+                    "song_title": song_title,
+                    "original_artist": original_artist,
+                    "status": "song_id_not_found",
+                }
+            )
+            continue
+        if has_song_lyrics(song_id):
+            lyrics_updates.append(
+                {
+                    "song_id": song_id,
+                    "song_title": song_title,
+                    "original_artist": original_artist,
+                    "status": "exists",
+                }
+            )
+            continue
+        result = fetch_lyrics(song_title, original_artist)
+        if result is None:
+            lyrics_updates.append(
+                {
+                    "song_id": song_id,
+                    "song_title": song_title,
+                    "original_artist": original_artist,
+                    "status": "lyrics_not_found",
+                }
+            )
+            continue
+        upsert_song_lyrics(song_id, result.lyrics_text, result.source)
+        lyrics_updates.append(
+            {
+                "song_id": song_id,
+                "song_title": song_title,
+                "original_artist": original_artist,
+                "status": "stored",
+                "source": result.source,
+            }
+        )
+    if validated_comments:
+        samples = build_training_samples(
+            audio,
+            validated_comments,
+            window_sec=config.comment_window_sec,
+            use_lyrics_rerank=config.use_lyrics_rerank,
+        )
+        sample_path = save_training_samples(video.video_id, samples)
+    else:
+        samples = []
+        sample_path = None
+    summary = summarize_training(samples)
+    status = (
+        "댓글 없음"
+        if parsed_comments.total_comments == 0
+        else "타임스탬프 없음"
+        if parsed_comments.parsed_comments == 0
+        else "유효 댓글 없음"
+        if not validated_comments
+        else "댓글 있음"
+    )
+    payload = {
+        "timestamped_comments": [
+            {
+                "timestamp_sec": comment.timestamp_sec,
+                "song_title": comment.song_title,
+                "original_artist": comment.original_artist,
+                "raw_text": comment.raw_text,
+            }
+            for comment in validated_comments
+        ],
+        "timestamped_comments_path": comment_path,
+        "training_samples_path": sample_path,
+        "training_summary": summary,
+        "training_summary_empty": not summary or summary.get("total", 0.0) == 0.0,
+        "raw_comment_count": parsed_comments.total_comments,
+        "timestamped_comment_count": parsed_comments.parsed_comments,
+        "validated_comment_count": len(validated_comments),
+        "comment_status": status,
+        "lyrics_updates": lyrics_updates,
+    }
+    return payload, parsed_comments.total_comments, parsed_comments.parsed_comments
+
 def _upsert_channel(connection: sqlite3.Connection, channel_id: str, channel_url: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     connection.execute(
@@ -139,20 +272,36 @@ def _upsert_channel(connection: sqlite3.Connection, channel_id: str, channel_url
 
 
 def _upsert_video(
-    connection: sqlite3.Connection, channel_id: str, video: Video, processed: bool = False
+    connection: sqlite3.Connection,
+    channel_id: str,
+    video: Video,
+    processed: bool | None = None,
 ) -> None:
-    connection.execute(
-        """
-        INSERT INTO videos (video_id, channel_id, title, duration_sec, processed)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(video_id) DO UPDATE SET
-            channel_id = excluded.channel_id,
-            title = excluded.title,
-            duration_sec = excluded.duration_sec,
-            processed = excluded.processed
-        """,
-        (video.video_id, channel_id, video.title, video.duration_sec, int(processed)),
-    )
+    if processed is None:
+        connection.execute(
+            """
+            INSERT INTO videos (video_id, channel_id, title, duration_sec)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                title = excluded.title,
+                duration_sec = excluded.duration_sec
+            """,
+            (video.video_id, channel_id, video.title, video.duration_sec),
+        )
+    else:
+        connection.execute(
+            """
+            INSERT INTO videos (video_id, channel_id, title, duration_sec, processed)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                title = excluded.title,
+                duration_sec = excluded.duration_sec,
+                processed = excluded.processed
+            """,
+            (video.video_id, channel_id, video.title, video.duration_sec, int(processed)),
+        )
     connection.commit()
 
 
@@ -395,13 +544,19 @@ def collect_archived_audio(
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
+    comment_processed_ids = _fetch_comment_training_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
     original_count = len(videos)
-    videos = filter_new_videos(videos, processed_ids=processed_ids)
+    videos = filter_new_videos(
+        videos,
+        processed_ids=processed_ids,
+        comment_training_processed_ids=comment_processed_ids,
+    )
     logger.info(
-        "이미 처리된 영상 제외: total=%s excluded=%s",
+        "이미 처리된 영상 제외: total=%s excluded=%s (comment_training=%s)",
         original_count,
         original_count - len(videos),
+        len(comment_processed_ids),
     )
     outputs: list[dict[str, object]] = []
 
@@ -414,7 +569,13 @@ def collect_archived_audio(
             video.video_id,
             video.title,
         )
+        _upsert_video(connection, channel_id, video)
         audio = extract_audio(video, target_rate=config.sample_rate)
+        comment_payload, raw_comment_count, parsed_comment_count = _prepare_comment_training(
+            video,
+            audio,
+            config,
+        )
         outputs.append(
             {
                 "channel_id": channel_id,
@@ -423,14 +584,18 @@ def collect_archived_audio(
                 "audio_path": audio.path,
                 "sample_rate": audio.sample_rate,
                 "is_live": video.is_live,
+                **comment_payload,
             }
         )
+        _mark_video_comment_training_processed(connection, video.video_id)
         logger.info(
-            "아카이브 음원 수집 완료 (%s/%s): video_id=%s title=%s",
+            "아카이브 음원 수집 완료 (%s/%s): video_id=%s title=%s raw_comments=%s timestamped_comments=%s",
             index,
             total,
             video.video_id,
             video.title,
+            raw_comment_count,
+            parsed_comment_count,
         )
 
     if not outputs:
@@ -477,71 +642,13 @@ def collect_archived_comment_training(
             video.video_id,
             video.title,
         )
+        _upsert_video(connection, channel_id, video)
         audio = extract_audio(video, target_rate=config.sample_rate)
-        parsed_comments = fetch_timestamped_comments(video.video_id)
-        comments = parsed_comments.comments
-        comment_path = save_timestamped_comments(video.video_id, comments)
-        lyrics_updates: list[dict[str, str]] = []
-        unique_songs: dict[tuple[str, str], tuple[str, str]] = {}
-        for comment in comments:
-            key = (_normalize_comment_value(comment.song_title), _normalize_comment_value(comment.original_artist))
-            if key not in unique_songs:
-                unique_songs[key] = (comment.song_title, comment.original_artist)
-
-        for song_title, original_artist in unique_songs.values():
-            song_id = find_song_id_by_title_artist(song_title, original_artist)
-            if not song_id:
-                lyrics_updates.append(
-                    {
-                        "song_title": song_title,
-                        "original_artist": original_artist,
-                        "status": "song_id_not_found",
-                    }
-                )
-                continue
-            if has_song_lyrics(song_id):
-                lyrics_updates.append(
-                    {
-                        "song_id": song_id,
-                        "song_title": song_title,
-                        "original_artist": original_artist,
-                        "status": "exists",
-                    }
-                )
-                continue
-            result = fetch_lyrics(song_title, original_artist)
-            if result is None:
-                lyrics_updates.append(
-                    {
-                        "song_id": song_id,
-                        "song_title": song_title,
-                        "original_artist": original_artist,
-                        "status": "lyrics_not_found",
-                    }
-                )
-                continue
-            upsert_song_lyrics(song_id, result.lyrics_text, result.source)
-            lyrics_updates.append(
-                {
-                    "song_id": song_id,
-                    "song_title": song_title,
-                    "original_artist": original_artist,
-                    "status": "stored",
-                    "source": result.source,
-                }
-            )
-        if comments:
-            samples = build_training_samples(
-                audio,
-                comments,
-                window_sec=config.comment_window_sec,
-                use_lyrics_rerank=config.use_lyrics_rerank,
-            )
-            sample_path = save_training_samples(video.video_id, samples)
-        else:
-            samples = []
-            sample_path = None
-        summary = summarize_training(samples)
+        comment_payload, raw_comment_count, parsed_comment_count = _prepare_comment_training(
+            video,
+            audio,
+            config,
+        )
         outputs.append(
             {
                 "channel_id": channel_id,
@@ -549,29 +656,7 @@ def collect_archived_comment_training(
                 "title": video.title,
                 "audio_path": audio.path,
                 "sample_rate": audio.sample_rate,
-                "timestamped_comments": [
-                    {
-                        "timestamp_sec": comment.timestamp_sec,
-                        "song_title": comment.song_title,
-                        "original_artist": comment.original_artist,
-                        "raw_text": comment.raw_text,
-                    }
-                    for comment in comments
-                ],
-                "timestamped_comments_path": comment_path,
-                "training_samples_path": sample_path,
-                "training_summary": summary,
-                "training_summary_empty": not summary or summary.get("total", 0.0) == 0.0,
-                "raw_comment_count": parsed_comments.total_comments,
-                "timestamped_comment_count": parsed_comments.parsed_comments,
-                "comment_status": (
-                    "댓글 없음"
-                    if parsed_comments.total_comments == 0
-                    else "타임스탬프 없음"
-                    if parsed_comments.parsed_comments == 0
-                    else "댓글 있음"
-                ),
-                "lyrics_updates": lyrics_updates,
+                **comment_payload,
             }
         )
         _mark_video_comment_training_processed(connection, video.video_id)
@@ -581,8 +666,8 @@ def collect_archived_comment_training(
             total,
             video.video_id,
             video.title,
-            parsed_comments.total_comments,
-            parsed_comments.parsed_comments,
+            raw_comment_count,
+            parsed_comment_count,
         )
 
     if not outputs:
