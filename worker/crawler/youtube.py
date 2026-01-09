@@ -18,6 +18,7 @@ from worker.models import Video
 from worker.ytdlp_runtime import js_runtime_cli_args, js_runtime_options
 
 logger = logging.getLogger(__name__)
+_EXCLUDED_TITLE_KEYWORDS = ("雑談",)
 
 
 def fetch_channel_id(channel_url: str) -> str:
@@ -111,6 +112,9 @@ def _build_video(entry: dict) -> Video | None:
     except (TypeError, ValueError):
         duration_sec = 0
     if not video_id or not title:
+        return None
+    if _exclude_title(title):
+        logger.warning("키워드 포함 영상 제외: video_id=%s title=%s", video_id, title)
         return None
     exclude_live, live_status = _exclude_live_entry(entry)
     if exclude_live:
@@ -214,6 +218,13 @@ def _fetch_uploads_with_api(channel_id: str, api_key: str) -> List[Video]:
             title = snippet.get("title")
             if not video_id or not title:
                 continue
+            if _exclude_title(title):
+                logger.warning(
+                    "키워드 포함 영상 제외: video_id=%s title=%s",
+                    video_id,
+                    title,
+                )
+                continue
             videos.append(
                 Video(
                     video_id=video_id,
@@ -270,6 +281,13 @@ def _fetch_search_event_videos(
             video_id = item.get("id", {}).get("videoId")
             title = snippet.get("title")
             if not video_id or not title:
+                continue
+            if _exclude_title(title):
+                logger.warning(
+                    "키워드 포함 영상 제외: video_id=%s title=%s",
+                    video_id,
+                    title,
+                )
                 continue
             if is_live:
                 logger.warning(
@@ -365,6 +383,10 @@ def _parse_iso8601_duration(value: str) -> int:
 def _chunk_list(items: list[str], chunk_size: int) -> Iterable[list[str]]:
     for index in range(0, len(items), chunk_size):
         yield items[index : index + chunk_size]
+
+
+def _exclude_title(title: str) -> bool:
+    return any(keyword in title for keyword in _EXCLUDED_TITLE_KEYWORDS)
 
 
 def _fallback_metadata(channel_url: str) -> dict | None:
