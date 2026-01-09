@@ -12,10 +12,7 @@ from typing import Iterable, List
 from worker.models import TimestampedComment
 
 TIMESTAMP_PATTERN = re.compile(r"(?P<timestamp>(?:\d{1,2}:)?\d{1,2}:\d{2})")
-COMMENT_PATTERN = re.compile(
-    r"(?P<timestamp>(?:\d{1,2}:)?\d{1,2}:\d{2})\s+(?P<title>[^-/—]+?)\s*(?:-|/|—)\s*(?P<artist>.+)",
-    re.UNICODE,
-)
+TITLE_ARTIST_PATTERN = re.compile(r"(?P<title>[^-/—]+?)\s*(?:-|/|—)\s*(?P<artist>.+)", re.UNICODE)
 
 
 def fetch_timestamped_comments(video_id: str) -> List[TimestampedComment]:
@@ -56,24 +53,57 @@ def _fetch_comments_with_ytdlp(video_id: str) -> List[TimestampedComment]:
 
 def _parse_timestamped_comments(raw_comments: Iterable[str]) -> List[TimestampedComment]:
     parsed: list[TimestampedComment] = []
+    total_comments = 0
+    excluded_comments = 0
     for text in raw_comments:
-        if not text or not TIMESTAMP_PATTERN.search(text):
+        total_comments += 1
+        if not text:
+            excluded_comments += 1
             continue
-        match = COMMENT_PATTERN.search(text)
-        if not match:
+        timestamp_matches = list(TIMESTAMP_PATTERN.finditer(text))
+        if not timestamp_matches:
+            excluded_comments += 1
             continue
-        timestamp = _parse_timestamp(match.group("timestamp"))
-        if timestamp is None:
-            continue
-        parsed.append(
-            TimestampedComment(
-                timestamp_sec=timestamp,
-                song_title=match.group("title").strip(),
-                original_artist=match.group("artist").strip(),
-                raw_text=text,
+        parsed_for_comment = 0
+        for index, match in enumerate(timestamp_matches):
+            timestamp = _parse_timestamp(match.group("timestamp"))
+            if timestamp is None:
+                continue
+            segment_end = timestamp_matches[index + 1].start() if index + 1 < len(timestamp_matches) else len(text)
+            segment = text[match.end() : segment_end].strip()
+            title, artist = _parse_title_artist(segment)
+            if not title:
+                continue
+            parsed.append(
+                TimestampedComment(
+                    timestamp_sec=timestamp,
+                    song_title=title,
+                    original_artist=artist,
+                    raw_text=text,
+                )
             )
-        )
+            parsed_for_comment += 1
+        if parsed_for_comment == 0:
+            excluded_comments += 1
+    logging.info(
+        "Parsed %d timestamped segments from %d comments (%d excluded).",
+        len(parsed),
+        total_comments,
+        excluded_comments,
+    )
     return parsed
+
+
+def _parse_title_artist(segment: str) -> tuple[str | None, str]:
+    if not segment:
+        return None, ""
+    match = TITLE_ARTIST_PATTERN.search(segment)
+    if match:
+        return match.group("title").strip(), match.group("artist").strip()
+    cleaned = segment.strip().strip("-/—").strip()
+    if cleaned:
+        return cleaned, ""
+    return None, ""
 
 
 def _parse_timestamp(value: str) -> float | None:
