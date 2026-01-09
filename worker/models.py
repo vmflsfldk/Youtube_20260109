@@ -10,6 +10,7 @@ class Video:
     video_id: str
     title: str
     duration_sec: int
+    is_live: bool = False
 
 
 @dataclass(frozen=True)

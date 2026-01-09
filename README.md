@@ -9,7 +9,7 @@
 
 입력 단위: 유튜브 채널 URL
 
-처리 대상: 해당 채널의 모든 영상
+처리 대상: 해당 채널의 모든 영상 (라이브 영상은 별도 수집 가능)
 
 판별 대상:
 
@@ -85,6 +85,27 @@ WAV
 16kHz ~ 48kHz
 
 오디오는 내부 처리용으로만 사용
+
+4.2.1 라이브 영상 음성 데이터 수집
+
+채널 URL을 입력하면 해당 채널의 모든 라이브 영상(스트리밍/아카이브)에서 오디오를 추출하여
+`audio/` 디렉터리에 저장한다. 파이프라인의 기본 CLI 실행은 라이브 영상 오디오 수집 결과를 출력한다.
+
+출력 예시:
+{
+  "requested_at": "2025-01-01T00:00:00+00:00",
+  "channel_url": "https://www.youtube.com/channel/UCxxxx",
+  "outputs": [
+    {
+      "channel_id": "UCxxxx",
+      "video_id": "live01",
+      "title": "Sample Live Stream 1",
+      "audio_path": "audio/live01.wav",
+      "sample_rate": 44100,
+      "is_live": true
+    }
+  ]
+}
 
 4.3 노래 구간 탐지 (Song Segment Detection)
 목적
