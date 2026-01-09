@@ -81,7 +81,7 @@ def process_video(channel_id: str, video: Video, config: PipelineConfig, store: 
 
     matches: list[SongMatch] = []
     for segment in filtered_segments:
-        candidates = audio_match(segment)
+        candidates = audio_match(audio.path, segment.start_sec, segment.end_sec)
         if config.use_lyrics_rerank:
             transcript = transcribe_segment(audio.path, segment.start_sec, segment.end_sec)
             best = rerank_with_lyrics(segment, transcript, candidates)
