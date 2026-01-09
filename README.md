@@ -24,16 +24,25 @@
 사용자 수정 데이터를 활용한 재귀개선(Recursive Improvement) 구조 포함
 
 2. 최종 출력 정의
+파이프라인 실행 시 아래 구조의 JSON이 출력된다.
 {
-  "channel_id": "UCxxxx",
-  "video_id": "abcd1234",
-  "results": [
+  "requested_at": "2025-01-01T00:00:00+00:00",
+  "channel_url": "https://www.youtube.com/channel/UCxxxx",
+  "stage": "analysis",
+  "outputs": [
     {
-      "start_time": 125.32,
-      "end_time": 312.87,
-      "song_title": "노래 제목",
-      "original_artist": "원곡자",
-      "confidence": 0.94
+      "channel_id": "UCxxxx",
+      "video_id": "abcd1234",
+      "results": [
+        {
+          "start_time": 125.32,
+          "end_time": 312.87,
+          "song_title": "노래 제목",
+          "original_artist": "원곡자",
+          "confidence": 0.94
+        }
+      ],
+      "feedback_template_path": "training/feedback/abcd1234.json"
     }
   ]
 }
@@ -54,8 +63,6 @@
 [가사 기반 재검증/정렬]
         ↓
 [곡 확정]
-        ↓
-[원곡자 메타 매핑]
         ↓
 [DB 저장 & 결과 제공]
 
@@ -171,11 +178,11 @@ Top-K 후보 선정
 
 가사-전사 시퀀스 정렬로 정확한 start/end 보정
 
-4.7 원곡자 매핑
+4.7 댓글 기반 학습 샘플 생성 (옵션)
 
-곡 DB 기준으로 원곡자 매핑
-
-방송에서 부른 사람(스트리머)은 고려하지 않음
+라이브 영상 댓글에서 타임스탬프/곡 정보를 파싱해
+오디오 매칭 결과와 비교할 수 있는 학습 샘플을 생성한다.
+샘플 JSON은 `training/samples/`에 저장된다.
 
 5. 재귀개선(Recursive Improvement) 구조
 5.1 개선 데이터 수집
@@ -199,14 +206,14 @@ ASR	도메인 적응
 5.3 개선 루프
 결과 생성 → 사용자 검수 → 데이터 축적 → 주기적 재학습/룰 개선
 
-6. DB 스키마 (Postgres / D1 공용)
+6. DB 스키마 (SQLite)
 6.1 channels
 CREATE TABLE channels (
   channel_id TEXT PRIMARY KEY,
   channel_url TEXT,
   channel_name TEXT,
-  last_crawled_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  last_crawled_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 6.2 videos
@@ -215,21 +222,12 @@ CREATE TABLE videos (
   channel_id TEXT,
   title TEXT,
   duration_sec INTEGER,
-  published_at TIMESTAMP,
-  processed BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  published_at TEXT,
+  processed INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-6.3 audio_files
-CREATE TABLE audio_files (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  video_id TEXT,
-  file_path TEXT,
-  sample_rate INTEGER,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-6.4 song_segments
+6.3 song_segments
 CREATE TABLE song_segments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   video_id TEXT,
@@ -237,57 +235,27 @@ CREATE TABLE song_segments (
   end_sec REAL,
   duration_sec REAL,
   confidence REAL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-6.5 songs
-CREATE TABLE songs (
-  song_id TEXT PRIMARY KEY,
-  title TEXT,
-  original_artist TEXT,
-  language TEXT,
-  title_aliases TEXT,
-  artist_aliases TEXT
-);
-
-6.6 song_matches
+6.4 song_matches
 CREATE TABLE song_matches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   segment_id INTEGER,
   song_id TEXT,
   match_score REAL,
   method TEXT,
-  confirmed BOOLEAN DEFAULT FALSE
+  confirmed INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-6.7 lyrics (선택)
-CREATE TABLE lyrics (
-  song_id TEXT PRIMARY KEY,
-  lyrics TEXT
-);
-
-7. MVP 기술 스택
-Backend / Orchestration
-
-NestJS 또는 Cloudflare Workers
-
-AI / Processing
-
-Python (Batch Worker)
-
-Frontend
-
-React + Vite
-
-Database
-
-Postgres (권장)
-
-D1 (경량)
+7. MVP 기술 스택 (현재 구현 기준)
+- Python (Batch Worker)
+- SQLite (`worker/pipeline.db`)
+- 외부 도구: `ffmpeg`, `yt-dlp`
 
 8. 디렉토리 구조
 project-root/
-├─ api/
 ├─ worker/
 │  ├─ crawler/
 │  ├─ audio/
@@ -295,21 +263,44 @@ project-root/
 │  ├─ asr/
 │  ├─ matching/
 │  └─ pipeline.py
-├─ frontend/
-└─ docs/
+└─ README.md
 
 9. 실행 방법
 아래 명령은 repo 루트에서 실행한다.
 
-1) 파이프라인 실행
+9.1 필수/선택 의존성
+- 필수: Python 3.10+, `ffmpeg`, `yt-dlp`
+- 선택:
+  - `faster-whisper` (가사 재랭크용 ASR)
+  - `rapidfuzz` (가사 유사도 강화)
+  - `chromaprint` (오디오 임베딩 매칭)
+  - `inaSpeechSegmenter`, `pyannote.audio` (구간 탐지 보강)
+  - `demucs` (보컬 분리)
+
+설치 예시(선택 의존성 포함):
+```bash
+python -m pip install faster-whisper rapidfuzz chromaprint inaSpeechSegmenter pyannote.audio
+```
+
+9.2 파이프라인 실행
 ```bash
 python -m worker.pipeline
 ```
-실행 후 프롬프트에서 유튜브 채널 URL과 파이프라인 단계(1. 크롤링 / 2. 분석)를 선택하면 JSON 결과가 출력된다.
-1은 라이브 영상 오디오만 수집하며, 2는 전체 분석 파이프라인을 실행해 매칭 결과를 반환한다.
+실행 후 프롬프트에서 유튜브 채널 URL과 파이프라인 단계(1. 크롤링 / 2. 분석 / 3. 댓글 학습)를 선택하면 JSON 결과가 출력된다.
 
-2) 파이프라인 설정 변경 (옵션)
-`worker/pipeline.py`의 `PipelineConfig`에서 샘플레이트, 보컬 분리, 최소 구간 길이 등을 조정할 수 있다.
+- 1: 라이브/스트리밍 영상 오디오만 수집 (`audio/` 저장)
+- 2: 전체 분석 파이프라인 실행 (구간 탐지 → 매칭 → 결과/피드백 저장)
+- 3: 타임스탬프 댓글 기반 학습 샘플 생성 (`training/` 저장)
+
+9.3 결과 저장 위치
+- SQLite DB: `worker/pipeline.db` (환경 변수 `PIPELINE_DB_PATH`로 변경 가능)
+- 오디오: `audio/`
+- 피드백 템플릿: `training/feedback/<video_id>.json`
+- 댓글 파싱 결과: `training/comments/<video_id>.json`
+- 댓글 기반 학습 샘플: `training/samples/<video_id>.json`
+
+9.4 파이프라인 설정 변경 (옵션)
+`worker/pipeline.py`의 `PipelineConfig`에서 샘플레이트, 보컬 분리, 최소 구간 길이, 댓글 학습 윈도우 등을 조정할 수 있다.
 
 10. 사용 오픈소스 후보
 단계	후보
