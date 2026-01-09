@@ -16,6 +16,8 @@ from typing import Iterable, List
 
 from worker.models import Video
 
+logger = logging.getLogger(__name__)
+
 
 def fetch_channel_id(channel_url: str) -> str:
     if importlib_util.find_spec("yt_dlp") is not None:
@@ -76,11 +78,10 @@ def _fetch_videos_with_ytdlp(channel_id: str) -> List[Video]:
 def _fetch_live_videos_with_ytdlp(channel_id: str) -> List[Video]:
     channel_url = f"https://www.youtube.com/channel/{channel_id}/streams"
     metadata = _fetch_channel_metadata(channel_url)
-    videos = _parse_videos(metadata, assume_live=True)
-    return [video for video in videos if video.is_live]
+    return _parse_videos(metadata)
 
 
-def _parse_videos(metadata: dict | None, assume_live: bool = False) -> List[Video]:
+def _parse_videos(metadata: dict | None) -> List[Video]:
     entries = metadata.get("entries") if metadata else None
     if not entries:
         return []
@@ -88,13 +89,13 @@ def _parse_videos(metadata: dict | None, assume_live: bool = False) -> List[Vide
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        video = _build_video(entry, assume_live=assume_live)
+        video = _build_video(entry)
         if video:
             videos.append(video)
     return videos
 
 
-def _build_video(entry: dict, assume_live: bool = False) -> Video | None:
+def _build_video(entry: dict) -> Video | None:
     video_id = entry.get("id")
     title = entry.get("title")
     duration = entry.get("duration") or entry.get("duration_string") or 0
@@ -104,15 +105,40 @@ def _build_video(entry: dict, assume_live: bool = False) -> Video | None:
         duration_sec = 0
     if not video_id or not title:
         return None
-    is_live = _entry_is_live(entry) or assume_live
+    exclude_live, live_status = _exclude_live_entry(entry)
+    if exclude_live:
+        logger.warning(
+            "라이브/예정 라이브 영상 제외 (라이브 시작 전이면 제외): video_id=%s title=%s live_status=%s",
+            video_id,
+            title,
+            live_status or "unknown",
+        )
+        return None
+    is_live = _entry_is_live(entry)
     return Video(video_id=video_id, title=title, duration_sec=duration_sec, is_live=is_live)
+
+
+def _exclude_live_entry(entry: dict) -> tuple[bool, str | None]:
+    live_status = entry.get("live_status")
+    if isinstance(live_status, str):
+        if live_status in {"is_live", "is_upcoming"}:
+            return True, live_status
+        if live_status in {"not_live", "was_live", "post_live"}:
+            return False, live_status
+    if entry.get("is_live"):
+        return True, "is_live"
+    if entry.get("is_upcoming"):
+        return True, "is_upcoming"
+    if entry.get("was_live"):
+        return False, "was_live"
+    return False, None
 
 
 def _entry_is_live(entry: dict) -> bool:
     live_status = entry.get("live_status")
     if isinstance(live_status, str):
-        return live_status in {"is_live", "was_live", "post_live"}
-    return bool(entry.get("is_live") or entry.get("was_live"))
+        return live_status in {"is_live", "is_upcoming"}
+    return bool(entry.get("is_live") or entry.get("is_upcoming"))
 
 
 def _fetch_channel_metadata(channel_url: str, playlist_end: int | None = None) -> dict | None:
@@ -237,6 +263,14 @@ def _fetch_search_event_videos(
             video_id = item.get("id", {}).get("videoId")
             title = snippet.get("title")
             if not video_id or not title:
+                continue
+            if is_live:
+                logger.warning(
+                    "라이브 영상 제외 (라이브 시작 전이면 제외): video_id=%s title=%s event_type=%s",
+                    video_id,
+                    title,
+                    event_type,
+                )
                 continue
             videos.append(
                 Video(

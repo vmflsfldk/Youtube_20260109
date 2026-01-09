@@ -334,13 +334,13 @@ def process_channel(
     return outputs
 
 
-def collect_live_audio(
+def collect_archived_audio(
     channel_url: str,
     config: PipelineConfig | None = None,
     db_path: Path | None = None,
 ) -> list[dict[str, object]]:
     config = config or PipelineConfig()
-    logger.info("collect_live_audio 시작: channel_url=%s", channel_url)
+    logger.info("collect_archived_audio 시작: channel_url=%s", channel_url)
     channel_id = fetch_channel_id(channel_url)
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
@@ -352,7 +352,7 @@ def collect_live_audio(
     total = len(videos)
     for index, video in enumerate(videos, start=1):
         logger.info(
-            "라이브 음원 수집 시작 (%s/%s): video_id=%s title=%s",
+            "아카이브 음원 수집 시작 (%s/%s): video_id=%s title=%s",
             index,
             total,
             video.video_id,
@@ -370,7 +370,7 @@ def collect_live_audio(
             }
         )
         logger.info(
-            "라이브 음원 수집 완료 (%s/%s): video_id=%s title=%s",
+            "아카이브 음원 수집 완료 (%s/%s): video_id=%s title=%s",
             index,
             total,
             video.video_id,
@@ -378,20 +378,20 @@ def collect_live_audio(
         )
 
     if not outputs:
-        logger.info("수집할 라이브 영상이 없습니다. (새 영상 없음/필터링됨)")
+        logger.info("수집할 아카이브 영상이 없습니다. (새 영상 없음/필터링됨/라이브 시작 전이면 제외)")
 
     connection.close()
-    logger.info("collect_live_audio 종료: channel_url=%s results=%s", channel_url, len(outputs))
+    logger.info("collect_archived_audio 종료: channel_url=%s results=%s", channel_url, len(outputs))
     return outputs
 
 
-def collect_live_comment_training(
+def collect_archived_comment_training(
     channel_url: str,
     config: PipelineConfig | None = None,
     db_path: Path | None = None,
 ) -> list[dict[str, object]]:
     config = config or PipelineConfig()
-    logger.info("collect_live_comment_training 시작: channel_url=%s", channel_url)
+    logger.info("collect_archived_comment_training 시작: channel_url=%s", channel_url)
     channel_id = fetch_channel_id(channel_url)
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
@@ -403,7 +403,7 @@ def collect_live_comment_training(
     total = len(videos)
     for index, video in enumerate(videos, start=1):
         logger.info(
-            "댓글 학습 수집 시작 (%s/%s): video_id=%s title=%s",
+            "아카이브 댓글 학습 수집 시작 (%s/%s): video_id=%s title=%s",
             index,
             total,
             video.video_id,
@@ -498,7 +498,7 @@ def collect_live_comment_training(
             }
         )
         logger.info(
-            "댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s comments=%s",
+            "아카이브 댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s comments=%s",
             index,
             total,
             video.video_id,
@@ -507,11 +507,11 @@ def collect_live_comment_training(
         )
 
     if not outputs:
-        logger.info("학습할 라이브 영상이 없습니다. (새 영상 없음/필터링됨)")
+        logger.info("학습할 아카이브 영상이 없습니다. (새 영상 없음/필터링됨/라이브 시작 전이면 제외)")
 
     connection.close()
     logger.info(
-        "collect_live_comment_training 종료: channel_url=%s results=%s",
+        "collect_archived_comment_training 종료: channel_url=%s results=%s",
         channel_url,
         len(outputs),
     )
@@ -532,7 +532,7 @@ def main() -> None:
         "--stage",
         choices=("crawl", "analysis", "comment-training"),
         help=(
-            "실행 단계 선택: crawl(라이브 음원 수집) | analysis(전체 분석) | comment-training(댓글 학습).\n"
+            "실행 단계 선택: crawl(아카이브 음원 수집) | analysis(전체 분석) | comment-training(아카이브 댓글 학습).\n"
             "미지정 시 대화형 입력으로 1~3 선택."
         ),
     )
@@ -578,9 +578,9 @@ def main() -> None:
     started_at = datetime.now(timezone.utc).isoformat()
     print(f"선택된 실행 단계: {stage}")
     if stage == "crawl":
-        results = collect_live_audio(channel_url, db_path=db_path)
+        results = collect_archived_audio(channel_url, db_path=db_path)
     elif stage == "comment-training":
-        results = collect_live_comment_training(channel_url, db_path=db_path)
+        results = collect_archived_comment_training(channel_url, db_path=db_path)
     else:
         results = process_channel(channel_url, db_path=db_path)
     payload = {
