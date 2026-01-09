@@ -421,21 +421,33 @@ def main() -> None:
     args = parser.parse_args()
 
     channel_url = (args.channel_url or "").strip()
-    if not channel_url:
+    while not channel_url:
+        print("오류: 채널 URL이 비어 있습니다. 다시 입력해주세요.")
         channel_url = input("Channel URL: ").strip()
 
     stage = args.stage
     if not stage:
-        selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석 / 3. 댓글 학습): ").strip()
-        if selection == "1":
-            stage = "crawl"
-        elif selection == "3":
-            stage = "comment-training"
-        else:
-            stage = "analysis"
+        while True:
+            selection = input(
+                "파이프라인 선택 (1. 크롤링 / 2. 분석 / 3. 댓글 학습): "
+            ).strip()
+            if selection in {"1", "crawl"}:
+                stage = "crawl"
+                break
+            if selection in {"2", "analysis"}:
+                stage = "analysis"
+                break
+            if selection in {"3", "comment-training"}:
+                stage = "comment-training"
+                break
+            print(
+                "오류: 허용되지 않는 선택입니다. "
+                "1, 2, 3 또는 crawl/analysis/comment-training 중에서 선택하세요."
+            )
 
     db_path = Path(args.db_path) if args.db_path else None
     started_at = datetime.now(timezone.utc).isoformat()
+    print(f"선택된 실행 단계: {stage}")
     if stage == "crawl":
         results = collect_live_audio(channel_url, db_path=db_path)
     elif stage == "comment-training":
