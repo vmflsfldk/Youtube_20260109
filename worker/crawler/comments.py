@@ -22,10 +22,13 @@ TIMESTAMP_PATTERN = re.compile(r"(?P<timestamp>(?:\d{1,2}:)?\d{1,2}:\d{2})")
 TITLE_ARTIST_PATTERN = re.compile(r"(?P<title>[^-/—]+?)\s*(?:-|/|—)\s*(?P<artist>.+)", re.UNICODE)
 
 
-def fetch_timestamped_comments(video_id: str) -> ParsedComments:
+def fetch_timestamped_comments(video_id: str, *, use_fallback: bool = False) -> ParsedComments:
     if importlib_util.find_spec("yt_dlp") is not None:
         return _fetch_comments_with_ytdlp(video_id)
-    return _fallback_timestamped_comments(video_id)
+    logging.warning("yt-dlp 미설치로 댓글 수집 불가")
+    if use_fallback:
+        return _fallback_timestamped_comments(video_id)
+    return ParsedComments(comments=[], total_comments=0, parsed_comments=0)
 
 
 def save_timestamped_comments(video_id: str, comments: Iterable[TimestampedComment]) -> str:
