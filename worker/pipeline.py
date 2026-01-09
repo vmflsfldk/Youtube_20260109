@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sqlite3
@@ -284,10 +285,14 @@ def process_video(
     }
 
 
-def process_channel(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
+def process_channel(
+    channel_url: str,
+    config: PipelineConfig | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
-    connection = _connect_db()
+    connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_videos(channel_id)
@@ -301,10 +306,14 @@ def process_channel(channel_url: str, config: PipelineConfig | None = None) -> l
     return outputs
 
 
-def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
+def collect_live_audio(
+    channel_url: str,
+    config: PipelineConfig | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
-    connection = _connect_db()
+    connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
@@ -328,10 +337,14 @@ def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -
     return outputs
 
 
-def collect_live_comment_training(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
+def collect_live_comment_training(
+    channel_url: str,
+    config: PipelineConfig | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
-    connection = _connect_db()
+    connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
@@ -378,30 +391,67 @@ def collect_live_comment_training(channel_url: str, config: PipelineConfig | Non
 
 
 def main() -> None:
-    channel_url = input("Channel URL: ").strip()
-    selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석 / 3. 댓글 학습): ").strip()
-    started_at = datetime.now(timezone.utc).isoformat()
-    if selection == "1":
-        stage = "crawl"
-        results = collect_live_audio(channel_url)
-    elif selection == "3":
-        stage = "comment-training"
-        results = collect_live_comment_training(channel_url)
-    else:
-        stage = "analysis"
-        results = process_channel(channel_url)
-    print(
-        json.dumps(
-            {
-                "requested_at": started_at,
-                "channel_url": channel_url,
-                "stage": stage,
-                "outputs": results,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+    parser = argparse.ArgumentParser(
+        description="YouTube singing segment pipeline",
+        formatter_class=argparse.RawTextHelpFormatter,
     )
+    parser.add_argument(
+        "--channel-url",
+        help="대상 채널 URL (미지정 시 대화형 입력).",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=("crawl", "analysis", "comment-training"),
+        help=(
+            "실행 단계 선택: crawl(라이브 음원 수집) | analysis(전체 분석) | comment-training(댓글 학습).\n"
+            "미지정 시 대화형 입력으로 1~3 선택."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        help="결과 JSON을 저장할 파일 경로. 미지정 시 stdout에 출력.",
+    )
+    parser.add_argument(
+        "--db-path",
+        help=(
+            "SQLite DB 파일 경로 (기본: 환경변수 PIPELINE_DB_PATH 또는 worker/pipeline.db). "
+            "채널/영상 상태를 이 파일에 저장."
+        ),
+    )
+    args = parser.parse_args()
+
+    channel_url = (args.channel_url or "").strip()
+    if not channel_url:
+        channel_url = input("Channel URL: ").strip()
+
+    stage = args.stage
+    if not stage:
+        selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석 / 3. 댓글 학습): ").strip()
+        if selection == "1":
+            stage = "crawl"
+        elif selection == "3":
+            stage = "comment-training"
+        else:
+            stage = "analysis"
+
+    db_path = Path(args.db_path) if args.db_path else None
+    started_at = datetime.now(timezone.utc).isoformat()
+    if stage == "crawl":
+        results = collect_live_audio(channel_url, db_path=db_path)
+    elif stage == "comment-training":
+        results = collect_live_comment_training(channel_url, db_path=db_path)
+    else:
+        results = process_channel(channel_url, db_path=db_path)
+    payload = {
+        "requested_at": started_at,
+        "channel_url": channel_url,
+        "stage": stage,
+        "outputs": results,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.output:
+        Path(args.output).write_text(rendered, encoding="utf-8")
+    print(rendered)
 
 
 if __name__ == "__main__":
