@@ -7,7 +7,7 @@ from importlib import util as importlib_util
 from typing import List
 
 from worker.asr.transcribe import Transcript
-from worker.matching.catalog import CATALOG
+from worker.matching.catalog import get_catalog_index
 from worker.models import SongCandidate
 
 
@@ -26,12 +26,22 @@ def match_lyrics(transcript: Transcript, candidates: List[SongCandidate]) -> Lis
     scores: list[LyricsScore] = []
     use_rapidfuzz = importlib_util.find_spec("rapidfuzz") is not None
 
+    catalog = get_catalog_index()
     for candidate in candidates:
         catalog_keywords = next(
-            (song.keywords for song in CATALOG if song.song_id == candidate.song_id),
+            (
+                (song.title, song.original_artist, *song.aliases)
+                for song in catalog.songs
+                if song.song_id == candidate.song_id
+            ),
             tuple(),
         )
-        keyword_tokens = {token for token in catalog_keywords if token}
+        keyword_tokens = {
+            token
+            for value in catalog_keywords
+            for token in str(value).replace("\n", " ").split()
+            if token
+        }
         overlap = tokens.intersection(keyword_tokens)
         base = (len(overlap) / max(1, len(keyword_tokens))) if keyword_tokens else 0.0
         similarity = base

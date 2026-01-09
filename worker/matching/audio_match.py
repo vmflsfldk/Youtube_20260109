@@ -8,7 +8,7 @@ import importlib.util
 import math
 from typing import Iterable, List, Sequence
 
-from worker.matching.catalog import CATALOG
+from worker.matching.catalog import get_catalog_index
 from worker.models import SongCandidate
 
 
@@ -21,13 +21,16 @@ def audio_match(
 ) -> List[SongCandidate]:
     confidence = 0.8 if confidence is None else confidence
     segment_embedding = _extract_segment_embedding(audio_path, start_sec, end_sec)
+    index = get_catalog_index()
+    if not index.songs:
+        return []
     candidates: list[SongCandidate] = []
-    for index, song in enumerate(CATALOG):
+    for position, song in enumerate(index.songs):
         embedding_score = None
         if segment_embedding is not None and song.embedding:
             embedding_score = _cosine_similarity(segment_embedding, song.embedding)
         if embedding_score is None:
-            score = _fallback_score(start_sec, end_sec, confidence, index)
+            score = _fallback_score(start_sec, end_sec, confidence, position)
             method = "audio-fallback"
         else:
             score = _embedding_score(embedding_score, confidence)
