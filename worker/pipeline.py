@@ -10,9 +10,11 @@ from typing import Iterable
 from worker.asr.transcribe import transcribe_segment
 from worker.audio.extract import AudioAsset, extract_audio
 from worker.audio.vocal import separate_vocals
+from worker.crawler.comments import fetch_timestamped_comments, save_timestamped_comments
 from worker.crawler.youtube import fetch_channel_id, fetch_live_videos, fetch_videos, filter_new_videos
 from worker.matching.audio_match import audio_match
 from worker.matching.rerank import rerank_with_lyrics
+from worker.matching.training import build_training_samples, save_training_samples, summarize_training
 from worker.models import SongMatch, SongSegment, Video
 from worker.segment.detect import detect_song_segments, filter_short_segments
 
@@ -23,6 +25,7 @@ class PipelineConfig:
     enable_vocal_separation: bool = False
     sample_rate: int = 44100
     use_lyrics_rerank: bool = True
+    comment_window_sec: float = 30.0
 
 
 class ResultStore:
@@ -126,13 +129,55 @@ def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -
     return outputs
 
 
+def collect_live_comment_training(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
+    config = config or PipelineConfig()
+    channel_id = fetch_channel_id(channel_url)
+    videos = fetch_live_videos(channel_id)
+    videos = filter_new_videos(videos, processed_ids=[])
+    outputs: list[dict[str, object]] = []
+
+    for video in videos:
+        audio = extract_audio(video, target_rate=config.sample_rate)
+        comments = fetch_timestamped_comments(video.video_id)
+        comment_path = save_timestamped_comments(video.video_id, comments)
+        samples = build_training_samples(audio, comments, window_sec=config.comment_window_sec)
+        sample_path = save_training_samples(video.video_id, samples)
+        summary = summarize_training(samples)
+        outputs.append(
+            {
+                "channel_id": channel_id,
+                "video_id": video.video_id,
+                "title": video.title,
+                "audio_path": audio.path,
+                "sample_rate": audio.sample_rate,
+                "timestamped_comments": [
+                    {
+                        "timestamp_sec": comment.timestamp_sec,
+                        "song_title": comment.song_title,
+                        "original_artist": comment.original_artist,
+                        "raw_text": comment.raw_text,
+                    }
+                    for comment in comments
+                ],
+                "timestamped_comments_path": comment_path,
+                "training_samples_path": sample_path,
+                "training_summary": summary,
+            }
+        )
+
+    return outputs
+
+
 def main() -> None:
     channel_url = input("Channel URL: ").strip()
-    selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석): ").strip()
+    selection = input("파이프라인 선택 (1. 크롤링 / 2. 분석 / 3. 댓글 학습): ").strip()
     started_at = datetime.now(timezone.utc).isoformat()
     if selection == "1":
         stage = "crawl"
         results = collect_live_audio(channel_url)
+    elif selection == "3":
+        stage = "comment-training"
+        results = collect_live_comment_training(channel_url)
     else:
         stage = "analysis"
         results = process_channel(channel_url)
