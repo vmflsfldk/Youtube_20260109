@@ -21,8 +21,7 @@ COMMENT_PATTERN = re.compile(
 def fetch_timestamped_comments(video_id: str) -> List[TimestampedComment]:
     if importlib_util.find_spec("yt_dlp") is not None:
         comments = _fetch_comments_with_ytdlp(video_id)
-        if comments:
-            return comments
+        return comments
     return _fallback_timestamped_comments(video_id)
 
 
