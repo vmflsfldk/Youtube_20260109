@@ -19,7 +19,12 @@ def build_training_samples(
     samples: list[TrainingSample] = []
     for comment in comments:
         segment = _segment_from_comment(comment, window_sec)
-        candidates = audio_match(segment)
+        candidates = audio_match(
+            audio.path,
+            segment.start_sec,
+            segment.end_sec,
+            confidence=segment.confidence,
+        )
         best = candidates[0]
         is_match = _normalize(best.title) == _normalize(comment.song_title) and _normalize(
             best.original_artist
