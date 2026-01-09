@@ -265,9 +265,27 @@ def process_video(
     for segment in filtered_segments:
         segment_id = _insert_segment(connection, video.video_id, segment)
         candidates = audio_match(audio.path, segment.start_sec, segment.end_sec)
+        if not candidates:
+            logger.warning(
+                "오디오 매칭 후보 없음: video_id=%s start_sec=%s end_sec=%s",
+                video.video_id,
+                segment.start_sec,
+                segment.end_sec,
+            )
+            matches.append(build_song_match(segment, "unknown", "unknown", 0.0))
+            continue
         if config.use_lyrics_rerank:
             transcript = transcribe_segment(audio.path, segment.start_sec, segment.end_sec)
             best = rerank_with_lyrics(segment, transcript, candidates)
+            if best is None:
+                logger.warning(
+                    "가사 리랭크 결과 없음: video_id=%s start_sec=%s end_sec=%s",
+                    video.video_id,
+                    segment.start_sec,
+                    segment.end_sec,
+                )
+                matches.append(build_song_match(segment, "unknown", "unknown", 0.0))
+                continue
         else:
             best = sorted(candidates, key=lambda item: item.match_score, reverse=True)[0]
         _insert_match(connection, segment_id, best.song_id, best.match_score, best.method)
