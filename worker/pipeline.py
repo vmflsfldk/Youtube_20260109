@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ class PipelineConfig:
 
 
 DEFAULT_DB_PATH = Path(os.getenv("PIPELINE_DB_PATH", "worker/pipeline.db"))
+logger = logging.getLogger(__name__)
 
 
 def _connect_db(db_path: Path | None = None) -> sqlite3.Connection:
@@ -291,6 +293,7 @@ def process_channel(
     db_path: Path | None = None,
 ) -> list[dict[str, object]]:
     config = config or PipelineConfig()
+    logger.info("process_channel 시작: channel_url=%s", channel_url)
     channel_id = fetch_channel_id(channel_url)
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
@@ -299,10 +302,29 @@ def process_channel(
     videos = filter_new_videos(videos, processed_ids=processed_ids)
     outputs: list[dict[str, object]] = []
 
-    for video in videos:
+    total = len(videos)
+    for index, video in enumerate(videos, start=1):
+        logger.info(
+            "영상 처리 시작 (%s/%s): video_id=%s title=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+        )
         outputs.append(process_video(channel_id, video, config, connection))
+        logger.info(
+            "영상 처리 완료 (%s/%s): video_id=%s title=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+        )
+
+    if not outputs:
+        logger.info("처리할 새 영상이 없습니다. (새 영상 없음/필터링됨)")
 
     connection.close()
+    logger.info("process_channel 종료: channel_url=%s results=%s", channel_url, len(outputs))
     return outputs
 
 
@@ -312,6 +334,7 @@ def collect_live_audio(
     db_path: Path | None = None,
 ) -> list[dict[str, object]]:
     config = config or PipelineConfig()
+    logger.info("collect_live_audio 시작: channel_url=%s", channel_url)
     channel_id = fetch_channel_id(channel_url)
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
@@ -320,7 +343,15 @@ def collect_live_audio(
     videos = filter_new_videos(videos, processed_ids=processed_ids)
     outputs: list[dict[str, object]] = []
 
-    for video in videos:
+    total = len(videos)
+    for index, video in enumerate(videos, start=1):
+        logger.info(
+            "라이브 음원 수집 시작 (%s/%s): video_id=%s title=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+        )
         audio = extract_audio(video, target_rate=config.sample_rate)
         outputs.append(
             {
@@ -332,8 +363,19 @@ def collect_live_audio(
                 "is_live": video.is_live,
             }
         )
+        logger.info(
+            "라이브 음원 수집 완료 (%s/%s): video_id=%s title=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+        )
+
+    if not outputs:
+        logger.info("수집할 라이브 영상이 없습니다. (새 영상 없음/필터링됨)")
 
     connection.close()
+    logger.info("collect_live_audio 종료: channel_url=%s results=%s", channel_url, len(outputs))
     return outputs
 
 
@@ -343,6 +385,7 @@ def collect_live_comment_training(
     db_path: Path | None = None,
 ) -> list[dict[str, object]]:
     config = config or PipelineConfig()
+    logger.info("collect_live_comment_training 시작: channel_url=%s", channel_url)
     channel_id = fetch_channel_id(channel_url)
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
@@ -351,7 +394,15 @@ def collect_live_comment_training(
     videos = filter_new_videos(videos, processed_ids=processed_ids)
     outputs: list[dict[str, object]] = []
 
-    for video in videos:
+    total = len(videos)
+    for index, video in enumerate(videos, start=1):
+        logger.info(
+            "댓글 학습 수집 시작 (%s/%s): video_id=%s title=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+        )
         audio = extract_audio(video, target_rate=config.sample_rate)
         comments = fetch_timestamped_comments(video.video_id)
         comment_path = save_timestamped_comments(video.video_id, comments)
@@ -385,12 +436,29 @@ def collect_live_comment_training(
                 "comment_status": "댓글 없음" if not comments else "댓글 있음",
             }
         )
+        logger.info(
+            "댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s comments=%s",
+            index,
+            total,
+            video.video_id,
+            video.title,
+            len(comments),
+        )
+
+    if not outputs:
+        logger.info("학습할 라이브 영상이 없습니다. (새 영상 없음/필터링됨)")
 
     connection.close()
+    logger.info(
+        "collect_live_comment_training 종료: channel_url=%s results=%s",
+        channel_url,
+        len(outputs),
+    )
     return outputs
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     parser = argparse.ArgumentParser(
         description="YouTube singing segment pipeline",
         formatter_class=argparse.RawTextHelpFormatter,
