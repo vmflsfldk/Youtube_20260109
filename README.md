@@ -277,7 +277,19 @@ project-root/
 ├─ frontend/
 └─ docs/
 
-9. 사용 오픈소스 후보
+9. 실행 방법
+아래 명령은 repo 루트에서 실행한다.
+
+1) 파이프라인 실행
+```bash
+python -m worker.pipeline
+```
+실행 후 프롬프트에 유튜브 채널 URL을 입력하면 JSON 결과가 출력된다.
+
+2) 파이프라인 설정 변경 (옵션)
+`worker/pipeline.py`의 `PipelineConfig`에서 샘플레이트, 보컬 분리, 최소 구간 길이 등을 조정할 수 있다.
+
+10. 사용 오픈소스 후보
 단계	후보
 채널 수집	yt-dlp, YouTube Data API
 오디오	ffmpeg, librosa
@@ -286,7 +298,7 @@ project-root/
 ASR	Whisper, faster-whisper
 오디오 매칭	Chromaprint, OpenL3, CLAP
 가사 매칭	RapidFuzz, Elasticsearch
-10. PoC 최소 코드 흐름
+11. PoC 최소 코드 흐름
 def process_channel(channel_url):
     channel_id = fetch_channel_id(channel_url)
     videos = fetch_videos(channel_id)
@@ -304,7 +316,7 @@ def process_channel(channel_url):
 
             save_result(video, seg, best)
 
-11. MVP 성공 기준
+12. MVP 성공 기준
 
 채널 단위 자동 수집
 
@@ -314,7 +326,7 @@ Top-1 곡 정확도 체감 ≥ 70%
 
 원곡자 자동 태깅 100%
 
-12. 핵심 요약
+13. 핵심 요약
 
 본 시스템은 단일 모델이 아닌 파이프라인 시스템
 
