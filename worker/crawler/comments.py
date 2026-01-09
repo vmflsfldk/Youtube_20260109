@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from worker.models import TimestampedComment
+from worker.ytdlp_runtime import js_runtime_options
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,12 @@ def _fetch_comments_with_ytdlp(video_id: str) -> ParsedComments:
         return ParsedComments(comments=[], total_comments=0, parsed_comments=0)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
-    options = {"quiet": True, "skip_download": True, "extract_comments": True}
+    options = {
+        "quiet": True,
+        "skip_download": True,
+        "extract_comments": True,
+        **js_runtime_options(),
+    }
     ydl = yt_dlp.YoutubeDL(options)
     try:
         info = ydl.extract_info(url, download=False)
