@@ -1,11 +1,13 @@
-"""Lyrics matching stub."""
+"""Lyrics matching with lightweight token similarity."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import util as importlib_util
 from typing import List
 
 from worker.asr.transcribe import Transcript
+from worker.matching.catalog import CATALOG
 from worker.models import SongCandidate
 
 
@@ -16,8 +18,31 @@ class LyricsScore:
 
 
 def match_lyrics(transcript: Transcript, candidates: List[SongCandidate]) -> List[LyricsScore]:
-    base = 0.5 if "샘플" in transcript.text else 0.4
-    return [
-        LyricsScore(song_id=candidate.song_id, score=base + candidate.match_score * 0.1)
-        for candidate in candidates
-    ]
+    text = transcript.text.strip()
+    if not text:
+        return [LyricsScore(song_id=candidate.song_id, score=0.0) for candidate in candidates]
+
+    tokens = {token for token in text.replace("\n", " ").split() if token}
+    scores: list[LyricsScore] = []
+    use_rapidfuzz = importlib_util.find_spec("rapidfuzz") is not None
+
+    for candidate in candidates:
+        catalog_keywords = next(
+            (song.keywords for song in CATALOG if song.song_id == candidate.song_id),
+            tuple(),
+        )
+        keyword_tokens = {token for token in catalog_keywords if token}
+        overlap = tokens.intersection(keyword_tokens)
+        base = (len(overlap) / max(1, len(keyword_tokens))) if keyword_tokens else 0.0
+        similarity = base
+
+        if use_rapidfuzz:
+            from rapidfuzz import fuzz  # type: ignore[import-not-found]
+
+            similarity = max(similarity, fuzz.partial_ratio(text, candidate.title) / 100.0)
+            similarity = max(similarity, fuzz.partial_ratio(text, candidate.original_artist) / 100.0)
+
+        score = min(0.99, 0.5 * similarity + 0.1 * candidate.match_score)
+        scores.append(LyricsScore(song_id=candidate.song_id, score=round(score, 2)))
+
+    return scores
