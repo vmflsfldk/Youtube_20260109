@@ -57,8 +57,14 @@ def fetch_live_videos(channel_id: str) -> List[Video]:
     return []
 
 
-def filter_new_videos(videos: Iterable[Video], processed_ids: Iterable[str]) -> List[Video]:
+def filter_new_videos(
+    videos: Iterable[Video],
+    processed_ids: Iterable[str],
+    comment_training_processed_ids: Iterable[str] | None = None,
+) -> List[Video]:
     processed = set(processed_ids)
+    if comment_training_processed_ids is not None:
+        processed |= set(comment_training_processed_ids)
     return [video for video in videos if video.video_id not in processed]
 
 

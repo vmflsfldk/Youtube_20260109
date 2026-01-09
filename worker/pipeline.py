@@ -78,6 +78,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             duration_sec INTEGER,
             published_at TEXT,
             processed INTEGER DEFAULT 0,
+            comment_training_processed INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -108,6 +109,13 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    video_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(videos)").fetchall()
+    }
+    if "comment_training_processed" not in video_columns:
+        cursor.execute(
+            "ALTER TABLE videos ADD COLUMN comment_training_processed INTEGER DEFAULT 0"
+        )
     connection.commit()
 
 
@@ -153,9 +161,27 @@ def _mark_video_processed(connection: sqlite3.Connection, video_id: str) -> None
     connection.commit()
 
 
+def _mark_video_comment_training_processed(connection: sqlite3.Connection, video_id: str) -> None:
+    connection.execute(
+        "UPDATE videos SET comment_training_processed = 1 WHERE video_id = ?",
+        (video_id,),
+    )
+    connection.commit()
+
+
 def _fetch_processed_video_ids(connection: sqlite3.Connection, channel_id: str) -> list[str]:
     rows = connection.execute(
         "SELECT video_id FROM videos WHERE channel_id = ? AND processed = 1",
+        (channel_id,),
+    ).fetchall()
+    return [row["video_id"] for row in rows]
+
+
+def _fetch_comment_training_processed_video_ids(
+    connection: sqlite3.Connection, channel_id: str
+) -> list[str]:
+    rows = connection.execute(
+        "SELECT video_id FROM videos WHERE channel_id = ? AND comment_training_processed = 1",
         (channel_id,),
     ).fetchall()
     return [row["video_id"] for row in rows]
@@ -323,7 +349,13 @@ def process_channel(
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_videos(channel_id)
+    original_count = len(videos)
     videos = filter_new_videos(videos, processed_ids=processed_ids)
+    logger.info(
+        "이미 처리된 영상 제외: total=%s excluded=%s",
+        original_count,
+        original_count - len(videos),
+    )
     outputs: list[dict[str, object]] = []
 
     total = len(videos)
@@ -364,7 +396,13 @@ def collect_archived_audio(
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
+    original_count = len(videos)
     videos = filter_new_videos(videos, processed_ids=processed_ids)
+    logger.info(
+        "이미 처리된 영상 제외: total=%s excluded=%s",
+        original_count,
+        original_count - len(videos),
+    )
     outputs: list[dict[str, object]] = []
 
     total = len(videos)
@@ -414,8 +452,20 @@ def collect_archived_comment_training(
     connection = _connect_db(db_path)
     _upsert_channel(connection, channel_id, channel_url)
     processed_ids = _fetch_processed_video_ids(connection, channel_id)
+    comment_processed_ids = _fetch_comment_training_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
-    videos = filter_new_videos(videos, processed_ids=processed_ids)
+    original_count = len(videos)
+    videos = filter_new_videos(
+        videos,
+        processed_ids=processed_ids,
+        comment_training_processed_ids=comment_processed_ids,
+    )
+    logger.info(
+        "이미 처리된 영상 제외: total=%s excluded=%s (comment_training=%s)",
+        original_count,
+        original_count - len(videos),
+        len(comment_processed_ids),
+    )
     outputs: list[dict[str, object]] = []
 
     total = len(videos)
@@ -524,6 +574,7 @@ def collect_archived_comment_training(
                 "lyrics_updates": lyrics_updates,
             }
         )
+        _mark_video_comment_training_processed(connection, video.video_id)
         logger.info(
             "아카이브 댓글 학습 수집 완료 (%s/%s): video_id=%s title=%s raw_comments=%s timestamped_comments=%s",
             index,
