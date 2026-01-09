@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import util as importlib_util
+import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,6 +20,9 @@ class Transcript:
     text: str
 
 
+logger = logging.getLogger(__name__)
+
+
 def transcribe_segment(audio_path: str | Path, start_sec: float, end_sec: float) -> Transcript:
     path = Path(audio_path)
     if not path.exists() or end_sec <= start_sec or end_sec <= 0:
@@ -25,11 +30,19 @@ def transcribe_segment(audio_path: str | Path, start_sec: float, end_sec: float)
     if _has_whisper():
         text = _transcribe_with_whisper(path, start_sec, end_sec)
         return Transcript(start_sec=start_sec, end_sec=end_sec, text=text)
-    return Transcript(start_sec=start_sec, end_sec=end_sec, text="샘플 가사 텍스트")
+    if _is_demo_mode():
+        logger.warning("ASR is not installed; demo mode enabled, returning sample text.")
+        return Transcript(start_sec=start_sec, end_sec=end_sec, text="샘플 가사 텍스트")
+    logger.warning("ASR is not installed; returning empty transcript.")
+    return Transcript(start_sec=start_sec, end_sec=end_sec, text="")
 
 
 def _has_whisper() -> bool:
     return importlib_util.find_spec("faster_whisper") is not None
+
+
+def _is_demo_mode() -> bool:
+    return os.getenv("ASR_DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _transcribe_with_whisper(audio_path: Path, start_sec: float, end_sec: float) -> str:
