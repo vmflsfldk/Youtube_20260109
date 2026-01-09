@@ -84,21 +84,32 @@ def _extract_with_ytdlp_pipe(source: str, output_path: Path, target_rate: int) -
         "1",
         str(output_path),
     ]
-    with subprocess.Popen(
-        ytdlp_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    ) as ytdlp_proc:
-        with subprocess.Popen(
-            ffmpeg_cmd,
-            stdin=ytdlp_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ) as ffmpeg_proc:
-            if ytdlp_proc.stdout:
-                ytdlp_proc.stdout.close()
-            _, ffmpeg_err = ffmpeg_proc.communicate()
-        _, ytdlp_err = ytdlp_proc.communicate()
+    ytdlp_log = tempfile.NamedTemporaryFile(delete=False, suffix=".ytdlp.log", dir=output_path.parent)
+    ytdlp_log_path = Path(ytdlp_log.name)
+    ytdlp_log.close()
+    ytdlp_err: bytes | None = None
+    ffmpeg_err: bytes | None = None
+    try:
+        with ytdlp_log_path.open("wb") as ytdlp_log_file:
+            with subprocess.Popen(
+                ytdlp_cmd,
+                stdout=subprocess.PIPE,
+                stderr=ytdlp_log_file,
+            ) as ytdlp_proc:
+                with subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdin=ytdlp_proc.stdout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                ) as ffmpeg_proc:
+                    if ytdlp_proc.stdout:
+                        ytdlp_proc.stdout.close()
+                    _, ffmpeg_err = ffmpeg_proc.communicate()
+                ytdlp_proc.wait()
+            ytdlp_err = ytdlp_log_path.read_bytes()
+    finally:
+        if ytdlp_log_path.exists():
+            ytdlp_log_path.unlink()
 
     if ytdlp_proc.returncode != 0 or ffmpeg_proc.returncode != 0:
         raise AudioExtractionError(
