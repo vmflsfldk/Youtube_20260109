@@ -21,6 +21,8 @@ class Transcript:
 
 
 logger = logging.getLogger(__name__)
+_MODEL = None
+_MODEL_CONFIG: tuple[str, str, str] | None = None
 
 
 def transcribe_segment(audio_path: str | Path, start_sec: float, end_sec: float) -> Transcript:
@@ -46,10 +48,7 @@ def _is_demo_mode() -> bool:
 
 
 def _transcribe_with_whisper(audio_path: Path, start_sec: float, end_sec: float) -> str:
-    import importlib
-
-    faster_whisper = importlib.import_module("faster_whisper")
-    model = faster_whisper.WhisperModel("tiny", device="cpu", compute_type="int8")
+    model = _get_whisper_model()
     segment_path = _extract_audio_segment(audio_path, start_sec, end_sec)
     if segment_path is None:
         return ""
@@ -59,6 +58,31 @@ def _transcribe_with_whisper(audio_path: Path, start_sec: float, end_sec: float)
         segment_path.unlink(missing_ok=True)
     texts = [chunk.text.strip() for chunk in segments if chunk.text.strip()]
     return " ".join(texts)
+
+
+def _get_whisper_model():
+    global _MODEL
+    global _MODEL_CONFIG
+    import importlib
+
+    config = _whisper_config()
+    if _MODEL is None or _MODEL_CONFIG != config:
+        faster_whisper = importlib.import_module("faster_whisper")
+        model_name, device, compute_type = config
+        _MODEL = faster_whisper.WhisperModel(
+            model_name,
+            device=device,
+            compute_type=compute_type,
+        )
+        _MODEL_CONFIG = config
+    return _MODEL
+
+
+def _whisper_config() -> tuple[str, str, str]:
+    model_name = os.getenv("ASR_WHISPER_MODEL", "tiny").strip() or "tiny"
+    device = os.getenv("ASR_WHISPER_DEVICE", "cpu").strip() or "cpu"
+    compute_type = os.getenv("ASR_WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
+    return model_name, device, compute_type
 
 
 def _extract_audio_segment(audio_path: Path, start_sec: float, end_sec: float) -> Path | None:
