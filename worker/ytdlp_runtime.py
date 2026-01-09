@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any
 
 
 def js_runtime_cli_args() -> list[str]:
@@ -13,12 +13,12 @@ def js_runtime_cli_args() -> list[str]:
     return ["--js-runtimes", f"{name}:{path}"]
 
 
-def js_runtime_options() -> dict[str, Iterable[str]]:
+def js_runtime_options() -> dict[str, dict[str, dict[str, Any]]]:
     runtime = _detect_js_runtime()
     if not runtime:
         return {}
     name, path = runtime
-    return {"js_runtimes": [f"{name}:{path}"]}
+    return {"js_runtimes": {name: {"path": path}}}
 
 
 def _detect_js_runtime() -> tuple[str, str] | None:
