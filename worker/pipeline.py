@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
+from pathlib import Path
+from typing import Iterable, Sequence
 
 from worker.asr.transcribe import transcribe_segment
 from worker.audio.extract import AudioAsset, extract_audio
@@ -36,32 +39,175 @@ class PipelineConfig:
     comment_window_sec: float = 30.0
 
 
-class ResultStore:
-    """In-memory result collector mimicking a persistence layer."""
+DEFAULT_DB_PATH = Path(os.getenv("PIPELINE_DB_PATH", "worker/pipeline.db"))
 
-    def __init__(self) -> None:
-        self._entries: list[dict[str, object]] = []
 
-    def add(self, channel_id: str, video_id: str, matches: Iterable[SongMatch]) -> None:
-        self._entries.append(
-            {
-                "channel_id": channel_id,
-                "video_id": video_id,
-                "results": [
-                    {
-                        "start_time": match.start_time,
-                        "end_time": match.end_time,
-                        "song_title": match.song_title,
-                        "original_artist": match.original_artist,
-                        "confidence": match.confidence,
-                    }
-                    for match in matches
-                ],
-            }
+def _connect_db(db_path: Path | None = None) -> sqlite3.Connection:
+    path = db_path or DEFAULT_DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    _ensure_schema(connection)
+    return connection
+
+
+def _ensure_schema(connection: sqlite3.Connection) -> None:
+    cursor = connection.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS channels (
+            channel_id TEXT PRIMARY KEY,
+            channel_url TEXT,
+            channel_name TEXT,
+            last_crawled_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS videos (
+            video_id TEXT PRIMARY KEY,
+            channel_id TEXT,
+            title TEXT,
+            duration_sec INTEGER,
+            published_at TEXT,
+            processed INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS song_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT,
+            start_sec REAL,
+            end_sec REAL,
+            duration_sec REAL,
+            confidence REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS song_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            segment_id INTEGER,
+            song_id TEXT,
+            match_score REAL,
+            method TEXT,
+            confirmed INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.commit()
 
-    def dump(self) -> list[dict[str, object]]:
-        return list(self._entries)
+
+def _upsert_channel(connection: sqlite3.Connection, channel_id: str, channel_url: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        """
+        INSERT INTO channels (channel_id, channel_url, last_crawled_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(channel_id) DO UPDATE SET
+            channel_url = excluded.channel_url,
+            last_crawled_at = excluded.last_crawled_at
+        """,
+        (channel_id, channel_url, now),
+    )
+    connection.commit()
+
+
+def _upsert_video(
+    connection: sqlite3.Connection, channel_id: str, video: Video, processed: bool = False
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO videos (video_id, channel_id, title, duration_sec, processed)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+            channel_id = excluded.channel_id,
+            title = excluded.title,
+            duration_sec = excluded.duration_sec,
+            processed = excluded.processed
+        """,
+        (video.video_id, channel_id, video.title, video.duration_sec, int(processed)),
+    )
+    connection.commit()
+
+
+def _mark_video_processed(connection: sqlite3.Connection, video_id: str) -> None:
+    connection.execute("UPDATE videos SET processed = 1 WHERE video_id = ?", (video_id,))
+    connection.commit()
+
+
+def _fetch_processed_video_ids(connection: sqlite3.Connection, channel_id: str) -> list[str]:
+    rows = connection.execute(
+        "SELECT video_id FROM videos WHERE channel_id = ? AND processed = 1",
+        (channel_id,),
+    ).fetchall()
+    return [row["video_id"] for row in rows]
+
+
+def _insert_segment(connection: sqlite3.Connection, video_id: str, segment: SongSegment) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO song_segments (video_id, start_sec, end_sec, duration_sec, confidence)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (video_id, segment.start_sec, segment.end_sec, segment.duration_sec, segment.confidence),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def _insert_match(
+    connection: sqlite3.Connection,
+    segment_id: int,
+    song_id: str,
+    match_score: float,
+    method: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO song_matches (segment_id, song_id, match_score, method)
+        VALUES (?, ?, ?, ?)
+        """,
+        (segment_id, song_id, match_score, method),
+    )
+    connection.commit()
+
+
+def _save_feedback_template(
+    channel_id: str,
+    video_id: str,
+    matches: Sequence[SongMatch],
+) -> str:
+    output_dir = Path("training") / "feedback"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{video_id}.json"
+    payload = {
+        "channel_id": channel_id,
+        "video_id": video_id,
+        "items": [
+            {
+                "start_time": match.start_time,
+                "end_time": match.end_time,
+                "song_title": match.song_title,
+                "original_artist": match.original_artist,
+                "confidence": match.confidence,
+                "corrected_title": None,
+                "corrected_artist": None,
+                "notes": None,
+            }
+            for match in matches
+        ],
+    }
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(output_path)
 
 
 def prepare_audio(video: Video, config: PipelineConfig) -> AudioAsset:
@@ -82,7 +228,13 @@ def build_song_match(segment: SongSegment, best_title: str, best_artist: str, sc
     )
 
 
-def process_video(channel_id: str, video: Video, config: PipelineConfig, store: ResultStore) -> None:
+def process_video(
+    channel_id: str,
+    video: Video,
+    config: PipelineConfig,
+    connection: sqlite3.Connection,
+) -> dict[str, object]:
+    _upsert_video(connection, channel_id, video, processed=False)
     audio = prepare_audio(video, config)
     segments = detect_song_segments(
         audio.path,
@@ -102,36 +254,61 @@ def process_video(channel_id: str, video: Video, config: PipelineConfig, store: 
 
     matches: list[SongMatch] = []
     for segment in filtered_segments:
+        segment_id = _insert_segment(connection, video.video_id, segment)
         candidates = audio_match(audio.path, segment.start_sec, segment.end_sec)
         if config.use_lyrics_rerank:
             transcript = transcribe_segment(audio.path, segment.start_sec, segment.end_sec)
             best = rerank_with_lyrics(segment, transcript, candidates)
         else:
             best = sorted(candidates, key=lambda item: item.match_score, reverse=True)[0]
+        _insert_match(connection, segment_id, best.song_id, best.match_score, best.method)
         match = build_song_match(segment, best.title, best.original_artist, best.match_score)
         matches.append(match)
 
-    store.add(channel_id, video.video_id, matches)
+    _mark_video_processed(connection, video.video_id)
+    feedback_path = _save_feedback_template(channel_id, video.video_id, matches)
+    return {
+        "channel_id": channel_id,
+        "video_id": video.video_id,
+        "results": [
+            {
+                "start_time": match.start_time,
+                "end_time": match.end_time,
+                "song_title": match.song_title,
+                "original_artist": match.original_artist,
+                "confidence": match.confidence,
+            }
+            for match in matches
+        ],
+        "feedback_template_path": feedback_path,
+    }
 
 
 def process_channel(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
+    connection = _connect_db()
+    _upsert_channel(connection, channel_id, channel_url)
+    processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_videos(channel_id)
-    videos = filter_new_videos(videos, processed_ids=[])
-    store = ResultStore()
+    videos = filter_new_videos(videos, processed_ids=processed_ids)
+    outputs: list[dict[str, object]] = []
 
     for video in videos:
-        process_video(channel_id, video, config, store)
+        outputs.append(process_video(channel_id, video, config, connection))
 
-    return store.dump()
+    connection.close()
+    return outputs
 
 
 def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
+    connection = _connect_db()
+    _upsert_channel(connection, channel_id, channel_url)
+    processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
-    videos = filter_new_videos(videos, processed_ids=[])
+    videos = filter_new_videos(videos, processed_ids=processed_ids)
     outputs: list[dict[str, object]] = []
 
     for video in videos:
@@ -147,14 +324,18 @@ def collect_live_audio(channel_url: str, config: PipelineConfig | None = None) -
             }
         )
 
+    connection.close()
     return outputs
 
 
 def collect_live_comment_training(channel_url: str, config: PipelineConfig | None = None) -> list[dict[str, object]]:
     config = config or PipelineConfig()
     channel_id = fetch_channel_id(channel_url)
+    connection = _connect_db()
+    _upsert_channel(connection, channel_id, channel_url)
+    processed_ids = _fetch_processed_video_ids(connection, channel_id)
     videos = fetch_live_videos(channel_id)
-    videos = filter_new_videos(videos, processed_ids=[])
+    videos = filter_new_videos(videos, processed_ids=processed_ids)
     outputs: list[dict[str, object]] = []
 
     for video in videos:
@@ -192,6 +373,7 @@ def collect_live_comment_training(channel_url: str, config: PipelineConfig | Non
             }
         )
 
+    connection.close()
     return outputs
 
 
