@@ -1,356 +1,96 @@
-# Youtube_202601091. 프로젝트 개요
-1.1 목적
-
-본 프로젝트는 유튜브 채널(우타와꾸 방송 등)의 모든 영상을 대상으로 음성 데이터를 수집·분석하여,
-방송 내에서 노래가 불린 구간을 자동 탐지하고,
-각 구간에 대해 어떤 노래가 불렸는지 및 해당 노래의 원곡자를 식별하는 시스템을 구축하는 것을 목표로 한다.
-
-1.2 핵심 특징
-
-입력 단위: 유튜브 채널 URL
-
-처리 대상: 해당 채널의 모든 영상 (라이브 영상은 별도 수집 가능)
-
-판별 대상:
-
-노래 구간 시작/종료 시점
-
-곡 제목
-
-원곡자(Original Artist)
-
-방송 스트리머는 식별 대상이 아님
-
-사용자 수정 데이터를 활용한 재귀개선(Recursive Improvement) 구조 포함
-
-2. 최종 출력 정의
-파이프라인 실행 시 아래 구조의 JSON이 출력된다.
-{
-  "requested_at": "2025-01-01T00:00:00+00:00",
-  "channel_url": "https://www.youtube.com/channel/UCxxxx",
-  "stage": "analysis",
-  "outputs": [
-    {
-      "channel_id": "UCxxxx",
-      "video_id": "abcd1234",
-      "results": [
-        {
-          "start_time": 125.32,
-          "end_time": 312.87,
-          "song_title": "노래 제목",
-          "original_artist": "원곡자",
-          "confidence": 0.94
-        }
-      ],
-      "feedback_template_path": "training/feedback/abcd1234.json"
-    }
-  ]
-}
-
-3. 시스템 전체 아키텍처
-[YouTube Channel URL]
-        ↓
-[채널 영상 목록 수집]
-        ↓
-[각 영상 오디오 추출]
-        ↓
-[노래 구간 탐지 (≥60초)]
-        ↓
-(옵션) [보컬 분리]
-        ↓
-[오디오 기반 곡 후보 검색]
-        ↓
-[가사 기반 재검증/정렬]
-        ↓
-[곡 확정]
-        ↓
-[DB 저장 & 결과 제공]
-
-4. 파이프라인 상세 설계
-4.1 유튜브 채널 크롤링
-
-입력: 유튜브 채널 URL
-
-처리:
-
-채널 ID 추출
-
-채널 내 전체 영상 목록 수집
-
-신규 영상만 증분 처리 가능
-
-출력: video_id 목록
-
-4.2 오디오 추출
-
-영상별 오디오 추출
-
-포맷 표준화:
-
-WAV
-
-16kHz ~ 48kHz
-
-오디오는 내부 처리용으로만 사용
-
-4.2.1 라이브 영상 음성 데이터 수집
-
-채널 URL을 입력하면 해당 채널의 모든 라이브 영상(스트리밍/아카이브)에서 오디오를 추출하여
-`audio/` 디렉터리에 저장한다. 파이프라인의 기본 CLI 실행은 라이브 영상 오디오 수집 결과를 출력한다.
-
-출력 예시:
-{
-  "requested_at": "2025-01-01T00:00:00+00:00",
-  "channel_url": "https://www.youtube.com/channel/UCxxxx",
-  "outputs": [
-    {
-      "channel_id": "UCxxxx",
-      "video_id": "live01",
-      "title": "Sample Live Stream 1",
-      "audio_path": "audio/live01.wav",
-      "sample_rate": 44100,
-      "is_live": true
-    }
-  ]
-}
-
-4.3 노래 구간 탐지 (Song Segment Detection)
-목적
-
-방송 전체에서 실제로 노래가 불린 구간만 추출하여 연산 비용 감소 및 정확도 향상
-
-처리 방식
-
-Speech / Music 분류
-
-Singing Voice Detection
-
-연속 구간 병합
-
-60초 미만 구간 제거
-
-출력
-[
-  { "start": 120.0, "end": 310.5 },
-  { "start": 480.2, "end": 650.9 }
-]
-
-4.4 (선택) 보컬 분리
-
-반주 제거 후 vocal stem 생성
-
-ASR 및 오디오 임베딩 정확도 향상
-
-MVP 단계에서는 옵션
-
-4.5 곡 후보 검색 (핵심 단계)
-4.5.1 오디오 기반 매칭 (Primary)
-
-노래 구간 오디오 → 임베딩/핑거프린트 추출
-
-사전 구축된 원곡 음원 DB와 유사도 비교
-
-Top-K 후보 선정
-
-장점
-
-커버곡 환경에 매우 강함
-
-가사 변경/애드립에도 안정적
-
-4.5.2 가사 기반 매칭 (Secondary)
-
-노래 구간 ASR 수행
-
-가사 DB와 퍼지 매칭
-
-용도:
-
-오디오 후보 재랭킹
-
-구간 정밀화
-
-4.6 곡 확정 및 구간 정밀화
-
-오디오 유사도 + 가사 정렬 점수 종합
-
-최종 곡 1개 확정
-
-가사-전사 시퀀스 정렬로 정확한 start/end 보정
-
-4.7 댓글 기반 학습 샘플 생성 (옵션)
-
-라이브 영상 댓글에서 타임스탬프/곡 정보를 파싱해
-오디오 매칭 결과와 비교할 수 있는 학습 샘플을 생성한다.
-샘플 JSON은 `training/samples/`에 저장된다.
-
-5. 재귀개선(Recursive Improvement) 구조
-5.1 개선 데이터 수집
-
-사용자가 결과 수정 가능
-
-저장 항목:
-
-잘못된 곡
-
-정답 곡
-
-실제 구간
-
-5.2 개선 대상
-영역	개선 내용
-구간 탐지	노래/비노래 오탐 감소
-곡 매칭	Top-K 정확도
-ASR	도메인 적응
-메타	표기/별칭 정규화
-5.3 개선 루프
-결과 생성 → 사용자 검수 → 데이터 축적 → 주기적 재학습/룰 개선
-
-6. DB 스키마 (SQLite)
-6.1 channels
-CREATE TABLE channels (
-  channel_id TEXT PRIMARY KEY,
-  channel_url TEXT,
-  channel_name TEXT,
-  last_crawled_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-6.2 videos
-CREATE TABLE videos (
-  video_id TEXT PRIMARY KEY,
-  channel_id TEXT,
-  title TEXT,
-  duration_sec INTEGER,
-  published_at TEXT,
-  processed INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-6.3 song_segments
-CREATE TABLE song_segments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  video_id TEXT,
-  start_sec REAL,
-  end_sec REAL,
-  duration_sec REAL,
-  confidence REAL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-6.4 song_matches
-CREATE TABLE song_matches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  segment_id INTEGER,
-  song_id TEXT,
-  match_score REAL,
-  method TEXT,
-  confirmed INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-7. MVP 기술 스택 (현재 구현 기준)
-- Python (Batch Worker)
-- SQLite (`worker/pipeline.db`)
-- 외부 도구: `ffmpeg`, `yt-dlp`
-
-8. 디렉토리 구조
-project-root/
-├─ worker/
-│  ├─ crawler/
-│  ├─ audio/
-│  ├─ segment/
-│  ├─ asr/
-│  ├─ matching/
-│  └─ pipeline.py
-└─ README.md
-
-9. 실행 방법
-아래 명령은 repo 루트에서 실행한다.
-
-9.1 필수/선택 의존성
-- 필수: Python 3.10+, `ffmpeg`, `yt-dlp`
-- 선택:
-  - `faster-whisper` (가사 재랭크용 ASR)
-  - `rapidfuzz` (가사 유사도 강화)
-  - `chromaprint` (오디오 임베딩 매칭)
-  - `inaSpeechSegmenter`, `pyannote.audio` (구간 탐지 보강)
-  - `demucs` (보컬 분리)
-
-yt-dlp JS 챌린지 대응 안내:
-- JavaScript 런타임(Node.js 또는 Deno)이 필요하다.
-- 런타임 경로를 지정하려면 `YTDLP_JS_RUNTIME="node:/path/to/node"` 또는
-  `YTDLP_JS_RUNTIME_PATH=/path/to/node`(선택적으로 `YTDLP_JS_RUNTIME_NAME=node`)를 설정한다.
-- EJS solver 리소스는 `remote_components` 설정으로 `ejs:github`를 사용한다.
-
-설치 예시(선택 의존성 포함):
-```bash
-python -m pip install faster-whisper rapidfuzz chromaprint inaSpeechSegmenter pyannote.audio
+# VTuber Live Analyzer MVP
+
+VTuber 라이브 영상에서 노래 구간을 탐지하고, 곡/원곡자를 매칭한 결과를 타임라인으로 제공하는 MVP입니다. 사용자는 유튜브 URL을 입력해 분석 작업을 생성하고, 완료된 세그먼트를 기반으로 클립 메타(원본 URL + 구간 시간)만 저장합니다.
+
+## 구성 요소
+- **Backend**: NestJS + TypeORM + PostgreSQL + BullMQ
+- **Worker**: Node.js(BullMQ consumer) + ffmpeg + 플러그형 오디오 분석기
+- **Frontend**: Vite + React + TypeScript
+- **DevOps**: docker-compose (Postgres/Redis)
+
+## 디렉토리 구조
+```
+.
+├── backend
+│   ├── migrations
+│   └── src
+├── frontend
+│   └── src
+├── worker-node
+│   └── src
+├── docker-compose.yml
+├── .env.example
+└── README.md
 ```
 
-9.2 파이프라인 실행
+## 핵심 플로우
+1. 프론트에서 유튜브 URL 입력 → `/videos/ingest`
+2. 등록된 아티스트(channelId)만 영상 등록/분석 가능
+3. `/videos/:videoId/analyze` 요청 시 BullMQ job 생성
+4. 워커가 오디오 추출 → wav 변환 → 더미 analyzer 분석 → 세그먼트 저장
+5. 프론트에서 `/analysis/jobs/:jobId`, `/videos/:videoId/segments`로 상태/결과 표시
+6. 세그먼트 선택 후 클립 메타 `/clips` 저장
+
+## 로컬 실행 가이드
+
+### 1) 인프라 실행
 ```bash
-python -m worker.pipeline
+docker-compose up -d
 ```
-실행 후 프롬프트에서 유튜브 채널 URL과 파이프라인 단계(1. 크롤링 / 2. 분석 / 3. 댓글 학습)를 선택하면 JSON 결과가 출력된다.
 
-- 1: 라이브/스트리밍 영상 오디오만 수집 (`audio/` 저장)
-- 2: 전체 분석 파이프라인 실행 (구간 탐지 → 매칭 → 결과/피드백 저장)
-- 3: 타임스탬프 댓글 기반 학습 샘플 생성 (`training/` 저장)
+### 2) 환경 변수
+```bash
+cp .env.example .env
+```
 
-9.3 결과 저장 위치
-- SQLite DB: `worker/pipeline.db` (환경 변수 `PIPELINE_DB_PATH`로 변경 가능)
-- 오디오: `audio/`
-- 피드백 템플릿: `training/feedback/<video_id>.json`
-- 댓글 파싱 결과: `training/comments/<video_id>.json`
-- 댓글 기반 학습 샘플: `training/samples/<video_id>.json`
+### 3) DB 마이그레이션
+```bash
+psql "$DATABASE_URL" -f backend/migrations/001_init.sql
+```
 
-9.4 파이프라인 설정 변경 (옵션)
-`worker/pipeline.py`의 `PipelineConfig`에서 샘플레이트, 보컬 분리, 최소 구간 길이, 댓글 학습 윈도우 등을 조정할 수 있다.
+### 4) 백엔드 실행
+```bash
+cd backend
+npm install
+npm run start:dev
+```
 
-10. 사용 오픈소스 후보
-단계	후보
-채널 수집	yt-dlp, YouTube Data API
-오디오	ffmpeg, librosa
-구간 탐지	pyannote.audio, inaSpeechSegmenter
-보컬 분리	Demucs, Spleeter
-ASR	Whisper, faster-whisper
-오디오 매칭	Chromaprint, OpenL3, CLAP
-가사 매칭	RapidFuzz, Elasticsearch
-11. PoC 최소 코드 흐름
-def process_channel(channel_url):
-    channel_id = fetch_channel_id(channel_url)
-    videos = fetch_videos(channel_id)
+### 5) 워커 실행
+```bash
+cd worker-node
+npm install
+npm run start
+```
 
-    for video in videos:
-        audio = extract_audio(video)
-        segments = detect_song_segments(audio)
+> `AUDIO_DOWNLOAD_MODE=mock`을 유지하면 `worker-node/assets/mock.wav`를 사용합니다. 실제 다운로드는 `AUDIO_DOWNLOAD_MODE=yt-dlp`로 전환하세요.
+> 워커는 최초 실행 전에 `songs` 시드가 필요합니다.
 
-        for seg in segments:
-            if seg.duration < 60:
-                continue
+### 6) 프론트 실행
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-            candidates = audio_match(seg)
-            best = rerank_with_lyrics(seg, candidates)
+### 7) 시드 데이터 예시
+```bash
+curl -X POST http://localhost:3000/artists/seed \\\n  -H 'Content-Type: application/json' \\\n  -d '[{\"channelId\":\"UCxxxx\",\"name\":\"Sample Artist\"}]'
 
-            save_result(video, seg, best)
+curl -X POST http://localhost:3000/songs/seed \\\n  -H 'Content-Type: application/json' \\\n  -d '[{\"title\":\"Sample Song\",\"originalArtist\":\"Original Artist\",\"lyricsText\":\"La la la\"}]'
+```
 
-12. MVP 성공 기준
+## MVP 주의사항
+- YouTube Data API 연동 전까지 **영상 URL에 channelId 쿼리를 추가**해야 합니다.
+  - 예: `https://www.youtube.com/watch?v=VIDEO_ID&channelId=UCxxxx`
+- 분석 결과는 더미 analyzer가 생성한 고정 세그먼트입니다.
+- 클립은 영상 업로드 없이 URL + start/end 메타만 저장합니다.
 
-채널 단위 자동 수집
-
-노래 구간 정확 탐지
-
-Top-1 곡 정확도 체감 ≥ 70%
-
-원곡자 자동 태깅 100%
-
-13. 핵심 요약
-
-본 시스템은 단일 모델이 아닌 파이프라인 시스템
-
-가사보다 오디오 기반 매칭이 핵심
-
-채널 단위 처리로 자동화 극대화
-
-사용자 피드백 기반 재귀개선으로 장기 정확도 상승
+## 주요 엔드포인트
+- `POST /videos/ingest`
+- `POST /videos/:videoId/analyze`
+- `GET /analysis/jobs/:jobId`
+- `GET /videos/:videoId/segments`
+- `POST /clips`
+- `GET /clips?videoId=...`
+- `POST /artists/seed`
+- `POST /songs/seed`
