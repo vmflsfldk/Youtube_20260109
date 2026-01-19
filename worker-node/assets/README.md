@@ -1,1 +1,1 @@
-Place a small mock WAV file at `worker-node/assets/mock.wav` for local testing when `AUDIO_DOWNLOAD_MODE=mock`.
+When `AUDIO_DOWNLOAD_MODE=local`, place a local audio file and set `AUDIO_SOURCE_PATH` to its path.

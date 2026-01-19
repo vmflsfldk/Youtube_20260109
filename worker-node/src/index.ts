@@ -1,13 +1,15 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
-import { DummyAnalyzer } from './analyzers/DummyAnalyzer';
+import { HttpAnalyzer } from './analyzers/HttpAnalyzer';
 import { downloadAudio } from './audio/downloadAudio';
 import { convertToWav } from './audio/ffmpeg';
-import { getFallbackSongId, insertSegments, updateJobStatus } from './db/client';
+import { insertSegments, listSongs, updateJobStatus, updateVideoStatus } from './db/client';
 
 const connection = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const queueName = process.env.ANALYZE_QUEUE ?? 'analyze-video';
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? '2');
+const analyzerEndpoint = process.env.ANALYZER_ENDPOINT ?? 'http://localhost:7001';
+const analyzerTimeoutMs = Number(process.env.ANALYZER_TIMEOUT_MS ?? '120000');
 
 const worker = new Worker(
   queueName,
@@ -20,13 +22,14 @@ const worker = new Worker(
 
     await updateJobStatus(jobId, 'running', 5);
 
-    const fallbackSongId = await getFallbackSongId();
-    if (!fallbackSongId) {
+    const songs = await listSongs();
+    if (!songs.length) {
       await updateJobStatus(jobId, 'failed', 100, 'No songs seeded in database');
+      await updateVideoStatus(videoId, 'failed');
       return;
     }
 
-    const analyzer = new DummyAnalyzer(fallbackSongId);
+    const analyzer = new HttpAnalyzer(analyzerEndpoint, analyzerTimeoutMs);
 
     const downloadResult = await downloadAudio(youtubeVideoId);
     await updateJobStatus(jobId, 'running', 25);
@@ -34,11 +37,12 @@ const worker = new Worker(
     const wavPath = await convertToWav(downloadResult.audioPath);
     await updateJobStatus(jobId, 'running', 50);
 
-    const segments = await analyzer.analyze(wavPath);
+    const segments = await analyzer.analyze(wavPath, songs);
     await updateJobStatus(jobId, 'running', 80);
 
     await insertSegments(videoId, segments);
     await updateJobStatus(jobId, 'done', 100);
+    await updateVideoStatus(videoId, 'analyzed');
 
     if (downloadResult.cleanup) {
       await downloadResult.cleanup();
@@ -51,8 +55,9 @@ worker.on('failed', async (job, err) => {
   if (!job) {
     return;
   }
-  const { jobId } = job.data as { jobId: string };
+  const { jobId, videoId } = job.data as { jobId: string; videoId: string };
   await updateJobStatus(jobId, 'failed', 100, err.message);
+  await updateVideoStatus(videoId, 'failed');
 });
 
 worker.on('ready', () => {

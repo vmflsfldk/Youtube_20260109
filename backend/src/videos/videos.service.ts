@@ -3,12 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Artist } from '../entities/artist.entity';
 import { Video } from '../entities/video.entity';
-import { parseYoutubeUrl } from '../common/youtube';
+import { fetchYoutubeVideoDetails, parseYoutubeUrl } from '../common/youtube';
 
 export interface IngestResult {
   video?: Video;
   artist?: Artist;
-  status: 'ok' | 'invalid_url' | 'artist_not_found';
+  status: 'ok' | 'invalid_url' | 'artist_not_found' | 'video_not_found' | 'youtube_api_error';
   message?: string;
 }
 
@@ -25,24 +25,46 @@ export class VideosService {
       return { status: 'invalid_url', message: 'Invalid YouTube URL' };
     }
 
-    if (!meta.channelId) {
-      return { status: 'artist_not_found', message: 'ChannelId is required for MVP ingest' };
+    let details;
+    try {
+      details = await fetchYoutubeVideoDetails(meta.videoId);
+    } catch (error) {
+      return {
+        status: 'youtube_api_error',
+        message: error instanceof Error ? error.message : 'YouTube API error',
+      };
     }
 
-    const artist = await this.artistRepo.findOne({ where: { channelId: meta.channelId } });
+    if (!details) {
+      return { status: 'video_not_found', message: 'Video not found via YouTube API' };
+    }
+
+    const artist = await this.artistRepo.findOne({ where: { channelId: details.channelId } });
     if (!artist) {
       return { status: 'artist_not_found', message: 'Artist not registered' };
     }
 
     const existing = await this.videoRepo.findOne({ where: { youtubeVideoId: meta.videoId } });
     if (existing) {
+      const needsUpdate =
+        existing.title !== details.title ||
+        existing.publishedAt?.toISOString() !== details.publishedAt?.toISOString() ||
+        existing.durationSec !== details.durationSec;
+      if (needsUpdate) {
+        existing.title = details.title;
+        existing.publishedAt = details.publishedAt;
+        existing.durationSec = details.durationSec;
+        await this.videoRepo.save(existing);
+      }
       return { status: 'ok', video: existing, artist };
     }
 
     const video = this.videoRepo.create({
-      youtubeVideoId: meta.videoId,
-      title: meta.title ?? 'Unknown title',
+      youtubeVideoId: details.videoId,
+      title: details.title,
       artist,
+      publishedAt: details.publishedAt,
+      durationSec: details.durationSec,
       status: 'pending',
     });
     await this.videoRepo.save(video);

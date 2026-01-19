@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 export async function convertToWav(inputPath: string): Promise<string> {
@@ -7,8 +6,7 @@ export async function convertToWav(inputPath: string): Promise<string> {
     return inputPath;
   }
 
-  const outputDir = path.resolve('tmp');
-  await fs.mkdir(outputDir, { recursive: true });
+  const outputDir = path.dirname(inputPath);
   const outputPath = path.join(outputDir, `${path.basename(inputPath, path.extname(inputPath))}.wav`);
 
   const ffmpegPath = process.env.FFMPEG_PATH ?? 'ffmpeg';

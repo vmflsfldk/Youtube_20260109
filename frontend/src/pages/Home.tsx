@@ -43,12 +43,12 @@ export default function Home({ onVideoReady }: HomeProps) {
   return (
     <div className="card">
       <h2>유튜브 링크 입력</h2>
-      <label>유튜브 URL (channelId 쿼리 포함 권장)</label>
+      <label>유튜브 URL</label>
       <input
         type="text"
         value={youtubeUrl}
         onChange={(event) => setYoutubeUrl(event.target.value)}
-        placeholder="https://www.youtube.com/watch?v=...&channelId=UCxxxx"
+        placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
       />
       <button onClick={handleIngest} disabled={loading}>
         분석 시작
