@@ -25,9 +25,9 @@ VTuber 라이브 영상에서 노래 구간을 탐지하고, 곡/원곡자를 �
 
 ## 핵심 플로우
 1. 프론트에서 유튜브 URL 입력 → `/videos/ingest`
-2. 등록된 아티스트(channelId)만 영상 등록/분석 가능
+2. YouTube Data API로 채널/메타 조회 후 등록된 아티스트만 분석 가능
 3. `/videos/:videoId/analyze` 요청 시 BullMQ job 생성
-4. 워커가 오디오 추출 → wav 변환 → 더미 analyzer 분석 → 세그먼트 저장
+4. 워커가 오디오 추출 → wav 변환 → 로컬 analyzer API 호출 → 세그먼트 저장
 5. 프론트에서 `/analysis/jobs/:jobId`, `/videos/:videoId/segments`로 상태/결과 표시
 6. 세그먼트 선택 후 클립 메타 `/clips` 저장
 
@@ -42,6 +42,8 @@ docker-compose up -d
 ```bash
 cp .env.example .env
 ```
+
+> `YOUTUBE_API_KEY`는 필수입니다.
 
 ### 3) DB 마이그레이션
 ```bash
@@ -62,7 +64,8 @@ npm install
 npm run start
 ```
 
-> `AUDIO_DOWNLOAD_MODE=mock`을 유지하면 `worker-node/assets/mock.wav`를 사용합니다. 실제 다운로드는 `AUDIO_DOWNLOAD_MODE=yt-dlp`로 전환하세요.
+> `yt-dlp`, `ffmpeg`가 로컬에 설치되어 있어야 합니다.
+> 기본값은 `AUDIO_DOWNLOAD_MODE=ytdlp`입니다. 로컬 파일을 쓰려면 `AUDIO_DOWNLOAD_MODE=local`과 `AUDIO_SOURCE_PATH`를 설정하세요.
 > 워커는 최초 실행 전에 `songs` 시드가 필요합니다.
 
 ### 6) 프론트 실행
@@ -80,10 +83,44 @@ curl -X POST http://localhost:3000/songs/seed \\\n  -H 'Content-Type: applicatio
 ```
 
 ## MVP 주의사항
-- YouTube Data API 연동 전까지 **영상 URL에 channelId 쿼리를 추가**해야 합니다.
-  - 예: `https://www.youtube.com/watch?v=VIDEO_ID&channelId=UCxxxx`
-- 분석 결과는 더미 analyzer가 생성한 고정 세그먼트입니다.
+- YouTube Data API 키가 필요합니다. `.env`에 `YOUTUBE_API_KEY`를 설정하세요.
+- 분석 결과는 로컬 analyzer 서비스가 반환합니다.
 - 클립은 영상 업로드 없이 URL + start/end 메타만 저장합니다.
+
+## 로컬 analyzer 서비스 기대 스펙
+- Endpoint: `POST ${ANALYZER_ENDPOINT}/analyze`
+- Request body:
+```json
+{
+  "wavPath": "/tmp/audio.wav",
+  "songs": [
+    {
+      "id": "uuid",
+      "title": "song title",
+      "originalArtist": "artist",
+      "lyricsText": "lyrics",
+      "language": "ja",
+      "metadata": {}
+    }
+  ]
+}
+```
+- Response body:
+```json
+{
+  "segments": [
+    {
+      "songId": "uuid",
+      "startSec": 10.5,
+      "endSec": 56.2,
+      "confidence": 0.82,
+      "evidence": {
+        "method": "asr+lyrics"
+      }
+    }
+  ]
+}
+```
 
 ## 주요 엔드포인트
 - `POST /videos/ingest`

@@ -15,6 +15,10 @@ export async function updateJobStatus(jobId: string, status: string, progress: n
   );
 }
 
+export async function updateVideoStatus(videoId: string, status: string) {
+  await pool.query('UPDATE videos SET status = $1 WHERE id = $2', [status, videoId]);
+}
+
 export async function insertSegments(
   videoId: string,
   segments: Array<{ songId: string; startSec: number; endSec: number; confidence: number; evidence?: Record<string, unknown> }>,
@@ -28,7 +32,18 @@ export async function insertSegments(
   await Promise.all(queries);
 }
 
-export async function getFallbackSongId(): Promise<string | null> {
-  const result = await pool.query('SELECT id FROM songs ORDER BY title ASC LIMIT 1');
-  return result.rows[0]?.id ?? null;
+export async function listSongs(): Promise<
+  Array<{
+    id: string;
+    title: string;
+    originalArtist: string;
+    lyricsText: string;
+    language: string | null;
+    metadata: Record<string, unknown> | null;
+  }>
+> {
+  const result = await pool.query(
+    'SELECT id, title, original_artist as "originalArtist", lyrics_text as "lyricsText", language, metadata FROM songs ORDER BY title ASC',
+  );
+  return result.rows;
 }

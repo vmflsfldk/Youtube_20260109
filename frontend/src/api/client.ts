@@ -16,7 +16,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export interface IngestResult {
-  status: 'ok' | 'invalid_url' | 'artist_not_found';
+  status: 'ok' | 'invalid_url' | 'artist_not_found' | 'video_not_found' | 'youtube_api_error';
   message?: string;
   video?: { id: string; youtubeVideoId: string; title: string };
   artist?: { id: string; name: string; channelId: string };
